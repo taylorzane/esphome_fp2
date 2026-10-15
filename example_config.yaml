@@ -13,6 +13,16 @@ esp32:
       ignore_efuse_mac_crc: true
       ignore_efuse_custom_mac: true
 
+# RUN-02/RUN-04 (09-03): a saved zone/Global-Zone override is a rare,
+# deliberate user action, not a high-frequency write - commit it to flash
+# as promptly as ESPHome allows (1ms - 0s is rejected, coerced with a
+# WARNING since a literal 0ms schedule would spin the main loop and trip
+# the watchdog) so it survives a quick hard power-cycle right after saving,
+# not just a graceful reboot. The extra flash wear is negligible given how
+# infrequently saves happen.
+preferences:
+  flash_write_interval: 1ms
+
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
@@ -34,6 +44,158 @@ api:
         - api.respond:
             data: !lambda |-
               id(fp2).json_get_map_data(root);
+    - action: fp2_force_detection_config
+      then:
+        - lambda: |-
+            id(fp2).force_detection_config();
+    - action: fp2_read_detection_config
+      then:
+        - lambda: |-
+            id(fp2).read_detection_config();
+    - action: fp2_read_mode_calibration_config
+      then:
+        - lambda: |-
+            id(fp2).read_mode_calibration_config();
+    - action: fp2_read_attr
+      variables:
+        attr: int
+      then:
+        - lambda: |-
+            id(fp2).read_attr((uint16_t) attr);
+    - action: fp2_write_attr_uint8
+      variables:
+        attr: int
+        value: int
+      then:
+        - lambda: |-
+            id(fp2).write_attr_uint8((uint16_t) attr, (uint8_t) value);
+    # RUN-04 (09-01): live Global Zone presence_sensitivity save with a real
+    # ACK-feedback response - wait_until: suspends until save_pending()
+    # empties (ACK) or save_failed_ is set (retry-exhaust/invalid input),
+    # then api.respond reports the true outcome (RESEARCH Pattern 3).
+    - action: fp2_save_global_zone_to_sensor
+      variables:
+        sensitivity: int
+      supports_response: status
+      then:
+        - lambda: |-
+            id(fp2).save_global_zone_to_sensor((uint8_t) sensitivity);
+        - wait_until:
+            timeout: 3s
+            condition:
+              lambda: 'return !id(fp2).save_pending();'
+        - api.respond:
+            success: !lambda 'return id(fp2).save_ok();'
+            error_message: !lambda 'return id(fp2).save_error();'
+    # RUN-01 (09-02): live single-zone save (grid + sensitivity + zone_type)
+    # bundled into one write the radar ACKs (D-02), using the same
+    # wait_until:+api.respond ACK-feedback mechanism as
+    # fp2_save_global_zone_to_sensor above. zone_type: -1 means "not set".
+    # 8s timeout covers worst-case FIFO retry-exhaustion across up to 4
+    # sequential registers (RESEARCH Pitfall 5), not just one.
+    - action: fp2_save_zone_to_sensor
+      variables:
+        zone_id: int
+        grid_hex: string
+        sensitivity: int
+        zone_type: int
+      supports_response: status
+      then:
+        - lambda: |-
+            id(fp2).save_zone_to_sensor((uint8_t) zone_id, grid_hex, (uint8_t) sensitivity, zone_type);
+        - wait_until:
+            timeout: 8s
+            condition:
+              lambda: 'return !id(fp2).save_pending();'
+        - api.respond:
+            success: !lambda 'return id(fp2).save_ok();'
+            error_message: !lambda 'return id(fp2).save_error();'
+    - action: fp2_write_attr_uint16
+      variables:
+        attr: int
+        value: int
+      then:
+        - lambda: |-
+            id(fp2).write_attr_uint16((uint16_t) attr, (uint16_t) value);
+    - action: fp2_write_attr_uint32
+      variables:
+        attr: int
+        value: int
+      then:
+        - lambda: |-
+            id(fp2).write_attr_uint32((uint16_t) attr, (uint32_t) value);
+    - action: fp2_write_attr_bool
+      variables:
+        attr: int
+        value: bool
+      then:
+        - lambda: |-
+            id(fp2).write_attr_bool((uint16_t) attr, value);
+    - action: fp2_configure_sleep_mode
+      variables:
+        width: int
+        length: int
+        mount_position: int
+      then:
+        - lambda: |-
+            id(fp2).configure_sleep_mode((uint16_t) width, (uint16_t) length, (uint8_t) mount_position);
+    - action: fp2_set_work_mode
+      variables:
+        mode: int
+      then:
+        - lambda: |-
+            id(fp2).set_work_mode((uint8_t) mode);
+    - action: fp2_set_ai_target_filter
+      variables:
+        enabled: bool
+      then:
+        - lambda: |-
+            id(fp2).set_ai_target_filter_enabled(enabled);
+    - action: fp2_calibrate_empty_room
+      then:
+        - lambda: |-
+            id(fp2).calibrate_empty_room();
+    - action: fp2_reset_radar
+      then:
+        - lambda: |-
+            id(fp2).reset_radar();
+
+button:
+  - platform: template
+    name: "FP2 Force Detection Config"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(fp2).force_detection_config();
+
+  - platform: template
+    name: "FP2 Calibrate Empty Room"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(fp2).calibrate_empty_room();
+
+  - platform: template
+    name: "FP2 Reset Radar"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(fp2).reset_radar();
+
+  # Let the radar auto-learn room edges / interference sources (0x0150 / 0x0139)
+  # instead of drawing the grids by hand.
+  - platform: template
+    name: "FP2 Auto Edge Detection"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(fp2).set_edge_auto_enabled(true);
+  - platform: template
+    name: "FP2 Auto Interference Detection"
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(fp2).set_interference_auto_enabled(true);
 
 ota:
   - platform: esphome
@@ -50,6 +212,8 @@ uart:
 i2c:
   sda: GPIO33
   scl: GPIO32
+  scan: true
+  frequency: 100kHz
 
 external_components:
   - source:
@@ -73,11 +237,71 @@ aqara_fp2:
   mounting_position: left_corner
   left_right_reverse: false
 
+  # Recover after lost radar traffic; 0s disables the traffic timeout.
+  radar_timeout: 60s
+  # Optional target-based presence for firmware that omits native events.
+  # derive_presence: true
+  # absence_timeout: 30s
+  # wall_units_per_cell: 20  # firmware 99; default 50, also used by the card
+  # ignore_exit_targets: true
+  # require_active_target: true  # firmware-dependent; default false
+
+  # Firmware-derived radar report controls.
+  # These mirror stock firmware SubIDs 0x0156-0x0174.
+  people_counting_report_enable: true
+  people_number_enable: true
+  target_type_enable: false
+  dwell_time_enable: false
+  walking_distance_enable: false
+  thermodynamic_chart_enable: true
+  # debug_mode: dumps the full hex of EVERY TX/RX frame to the logs (verbose) for
+  # protocol reverse-engineering, beyond the existing radar_debug diagnostics.
+  # Default false = current radar_debug-only behavior, byte-for-byte unchanged.
+  # debug_mode: true
+
+  # Optional raw-UART telnet bridge for live protocol sniffing. DEFAULT DISABLED.
+  # WARNING: NO AUTHENTICATION. LAN-only / trusted-network use ONLY - never expose
+  # this port to the internet (matches this project's no-MQTT / minimal-attack-surface
+  # posture). Single client only; a new connection replaces the previous one.
+  # telnet_enable: true
+  # telnet_port: 23
+  # Optional feature streams. Enable only when you want to experiment with them.
+  # sleep_report_enable: true
+  # posture_report_enable: true
+  # fall_detection: false
+  # fall_detection_sensitivity: medium
+  # Surfaces the corrected 0x0121 fall-event report (0=clear/1=type A/2=type B)
+  # as a binary_sensor. Requires WORK_MODE=8 (Fall Detection) to fire — see
+  # the fp2_set_work_mode diagnostic action. Optional; not tied to the
+  # fall_detection flag above.
+  # fall_detected:
+  #   name: "Fall Detected"
+
+  # Surfaces FALL_OVERTIME_REPORT (0x0136), distinct from 0x0134
+  # (fall_overtime_report_period) and 0x0135 (fall_overtime_detection),
+  # which are config/enable attributes, not this report. NOTE: per
+  # reverse-engineering an independent fork, this SubID's stock-firmware
+  # handler may be an inert 3-byte stub and may never fire — the sensor
+  # registers and parses safely either way (malformed/short payloads are
+  # routed to radar_debug, not treated as an error). Optional; live-fire
+  # confirmation on real hardware is a deferred, non-blocking follow-up.
+  # fall_overtime:
+  #   name: "Fall Overtime"
+
   target_tracking:
     name: "Targets"
 
   location_report_switch:
     name: "Report Targets"
+
+  # PROTO-04 (D-04): switches the radar between its three factory-preinstalled
+  # firmware images via plain WORK_MODE writes only - no OTA, no firmware
+  # flashing. Options: "Zone Detection" (WORK_MODE=3, default), "Fall
+  # Detection" (WORK_MODE=8, required for the fall_detected sensor above to
+  # ever report), "Sleep Monitoring" (WORK_MODE=9, via configure_sleep_mode()
+  # sequencing). Non-persistent this phase - always boots into Zone Detection.
+  # operating_mode:
+  #   name: "Operating Mode"
 
   # 14x14 Grid (Active Area)
   interference_grid: |-
@@ -121,6 +345,7 @@ aqara_fp2:
 
   zones:
     - id: sofa_zone
+      zone_id: 1  # optional stable protocol slot (1..31); keep when reordering
       grid: |-
         . . X X X . . . . . . . . .
         . . X X X . . . . . . . . .
@@ -137,15 +362,55 @@ aqara_fp2:
         . . . . . . . . . . . . . .
         . . . . . . . . . . . . . .
       presence_sensitivity: high
+      # Zone motion (0x0115) reports momentary events; the sensor is held ON and
+      # released after this debounce timeout with no new movement (default 5s).
+      motion_timeout: 5s
+      # Optional furniture/scene type (0x0152) to cut false positives.
+      # One of: tv, green_plant, leisure, dressing, closet, desk, shower, stairs.
+      zone_type: leisure
       presence:
         name: "Sofa Zone Presence"
       motion:
         name: "Sofa Zone Motion"
+      # Per-zone people count, decoded from ZONE_PEOPLE_NUMBER (0x0175). NOT the
+      # same as the top-level `people_counting` sensor (0x0155) below -- this
+      # one is scoped per zone. Requires an explicit block to appear in HA.
+      # people_count:
+      #   name: "Sofa Zone People Count"
 
   radar_software_version:
     name: "Radar Software Version"
   radar_temperature:
     name: "Radar Temperature"
+  radar_debug:
+    name: "Radar Debug"
+  realtime_people_number:
+    name: "Realtime People Number"
+  ontime_people_number:
+    name: "Ontime People Number"
+  realtime_people_counting:
+    name: "Realtime People Counting"
+  people_counting:
+    name: "People Counting"
+  walking_distance:
+    name: "Walking Distance"
+  # Derived from the location tracking stream (0x0117).
+  target_count:
+    name: "Target Count"
+  nearest_distance:
+    name: "Nearest Target Distance"
+  sleep_data:
+    name: "Sleep Data"
+  sleep_presence:
+    name: "Sleep Presence"
+  sleep_inout_state:
+    name: "Sleep In Out State"
+  sleep_state:
+    name: "Sleep State"
+  sleep_event:
+    name: "Sleep Event"
+  target_posture:
+    name: "Target Posture"
 
 sensor:
   - platform: opt3001
@@ -161,11 +426,23 @@ binary_sensor:
       inverted: true
     name: "Device Button"
 
-# Status LED (README: IO27 - LED). Using one channel of RGB as status.
-# Unused: IO26, IO14
+output:
+  - platform: ledc
+    id: status_led_red
+    pin: GPIO14
+    inverted: true
+  - platform: ledc
+    id: status_led_green
+    pin: GPIO26
+    inverted: true
+  - platform: ledc
+    id: status_led_blue
+    pin: GPIO27
+    inverted: true
+
 light:
-  - platform: status_led
+  - platform: rgb
     name: "Status LED"
-    pin:
-      number: GPIO27
-      inverted: true
+    red: status_led_red
+    green: status_led_green
+    blue: status_led_blue

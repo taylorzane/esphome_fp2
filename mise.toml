@@ -1,0 +1,18 @@
+[tools]
+python = "3.12.13"
+
+[tasks.esphome]
+description = "Run the locked ESPHome 2026.10 beta"
+run = "uv run --locked esphome"
+
+[tasks.config]
+description = "Validate the example configuration (requires secrets.yaml)"
+run = "uv run --locked esphome config example_config.yaml"
+
+[tasks.build]
+description = "Build the example firmware (requires secrets.yaml)"
+run = "uv run --locked esphome compile example_config.yaml"
+
+[tasks.test]
+description = "Run host protocol, concurrency, schema, and card regression tests"
+run = "bash tests/run-tests.sh"

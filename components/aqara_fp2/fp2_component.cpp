@@ -1,29 +1,153 @@
 #include "fp2_component.h"
+#include "location_targets.h"
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+#include "zones_web_handler.h"
+#endif
 #include "esphome/components/switch/switch.h"
+#include "esphome/core/application.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include "esphome/core/preferences.h"
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace esphome {
 namespace aqara_fp2 {
 
-// CRC16-MODBUS
-static uint16_t crc16(const uint8_t *data, size_t len) {
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int j = 0; j < 8; j++) {
-      if ((crc & 0x0001) != 0) {
-        crc >>= 1;
-        crc ^= 0xA001;
-      } else {
-        crc >>= 1;
-      }
-    }
+const char* FP2Component::attr_id_to_string_(AttrId attr_id) {
+  switch (attr_id) {
+    case AttrId::RADAR_HW_VERSION: return "radar_hw_version";
+    case AttrId::RADAR_SW_VERSION: return "radar_sw_version";
+    case AttrId::MOTION_DETECT: return "motion_detection";
+    case AttrId::PRESENCE_DETECT: return "presence_detection";
+    case AttrId::MONITOR_MODE: return "monitor_mode";
+    case AttrId::CLOSING_SETTING: return "closing_setting";
+    case AttrId::EDGE_MAP: return "edge_label";
+    case AttrId::ENTRY_EXIT_MAP: return "import_export_label";
+    case AttrId::INTERFERENCE_MAP: return "interference_source";
+    case AttrId::PRESENCE_DETECT_SENSITIVITY: return "presence_detection_sensitivity";
+    case AttrId::LOCATION_REPORT_ENABLE: return "location_report_enable";
+    case AttrId::RESET_ABSENT_STATUS: return "reset_absent_status";
+    case AttrId::ZONE_MAP: return "zone_detect_setting";
+    case AttrId::DETECT_ZONE_MOTION: return "detect_zone_motion";
+    case AttrId::WORK_MODE: return "work_mode";
+    case AttrId::LOCATION_TRACKING_DATA: return "location_track_data";
+    case AttrId::ANGLE_SENSOR_DATA: return "angle_sensor_data";
+    case AttrId::FALL_DETECTION_RESULT: return "fall_detection_result";
+    case AttrId::LEFT_RIGHT_REVERSE: return "left_right_reverse";
+    case AttrId::FALL_SENSITIVITY: return "fall_detection_sensitivity";
+    case AttrId::RADAR_INTERFERENCE_AUTO_SETTING: return "radar_interference_auto_setting";
+    case AttrId::OTA_SET_FLAG: return "ota_set_flag";
+    case AttrId::TEMPERATURE: return "temperature";
+    case AttrId::FALL_OVERTIME_REPORT_PERIOD: return "fall_overtime_report_period";
+    case AttrId::FALL_OVERTIME_DETECTION: return "fall_overtime_detection";
+    case AttrId::FALL_OVERTIME_REPORT: return "fall_overtime_report";
+    case AttrId::THERMO_EN: return "thermodynamic_chart_enable";
+    case AttrId::INTERFERENCE_AUTO_ENABLE: return "interference_auto_enable";
+    case AttrId::THERMO_DATA: return "thermodynamic_chart_data";
+    case AttrId::ZONE_PRESENCE: return "detect_zone_presence";
+    case AttrId::ZONE_PEOPLE_NUMBER: return "zone_people_number";
+    case AttrId::DEVICE_DIRECTION: return "device_direction";
+    case AttrId::EDGE_AUTO_SETTING: return "edge_auto_setting";
+    case AttrId::EDGE_AUTO_ENABLE: return "edge_auto_enable";
+    case AttrId::ZONE_SENSITIVITY: return "detect_zone_sensitivity";
+    case AttrId::DETECT_ZONE_TYPE: return "detect_zone_type";
+    case AttrId::ZONE_CLOSE_AWAY_ENABLE: return "radar_detect_zone_close_away_enable";
+    case AttrId::TARGET_POSTURE: return "target_posture";
+    case AttrId::PEOPLE_COUNTING: return "people_counting";
+    case AttrId::SLEEP_REPORT_ENABLE: return "sleep_report_enable";
+    case AttrId::POSTURE_REPORT_ENABLE: return "posture_report_enable";
+    case AttrId::PEOPLE_COUNT_REPORT_ENABLE: return "people_counting_report_enable";
+    case AttrId::SLEEP_DATA: return "sleep_data";
+    case AttrId::DELETE_FALSE_TARGET: return "delete_false_target";
+    case AttrId::SLEEP_STATE: return "sleep_state";
+    case AttrId::PEOPLE_NUMBER_ENABLE: return "people_number_enable";
+    case AttrId::TARGET_TYPE_ENABLE: return "target_type_enable";
+    case AttrId::REALTIME_PEOPLE_NUMBER: return "realtime_people_number";
+    case AttrId::ONTIME_PEOPLE_NUMBER: return "ontime_people_number";
+    case AttrId::REALTIME_PEOPLE_COUNTING: return "realtime_people_counting";
+    case AttrId::SLEEP_PRESENCE: return "sleep_presence";
+    case AttrId::SLEEP_MOUNT_POSITION: return "sleep_zone_mount_position";
+    case AttrId::SLEEP_ZONE_SIZE: return "sleep_zone_size";
+    case AttrId::WALL_CORNER_POS: return "wall_corner_mount_position";
+    case AttrId::SLEEP_INOUT_STATE: return "sleep_inout_state";
+    case AttrId::DWELL_TIME_ENABLE: return "dwell_time_enable";
+    case AttrId::WALK_DISTANCE_ENABLE: return "walking_distance_enable";
+    case AttrId::WALK_DISTANCE_ALL: return "walking_distance_all";
+    case AttrId::SLEEP_EVENT: return "sleep_event";
+    case AttrId::SLEEP_EVENT_DESCRIPTOR: return "sleep_event_descriptor";
+    case AttrId::SLEEP_BED_HEIGHT: return "sleep_bed_height";
+    case AttrId::FALL_DELAY_TIME: return "fall_delay_time";
+    case AttrId::FALLDOWN_BLIND_ZONE: return "falldown_blind_zone";
+    case AttrId::DEBUG_LOG: return "debug_log";
+    case AttrId::ZONE_ACTIVATION_LIST: return "aux_data";
+    case AttrId::SLEEP_HEARTBEAT_SYNC: return "sleep_heartbeat_sync";
+    case AttrId::RADAR_FLASH_ID: return "radar_flash_id";
+    case AttrId::RADAR_ID: return "radar_id";
+    case AttrId::RADAR_CALIBRATION_RESULT: return "radar_calibration_result";
+    default: return "unknown";
   }
-  return crc;
+}
+
+const char* FP2Component::op_code_to_string_(uint8_t type) {
+  switch ((OpCode) type) {
+    case OpCode::RESPONSE: return "response";
+    case OpCode::WRITE: return "write";
+    case OpCode::ACK: return "ack";
+    case OpCode::READ: return "read";
+    case OpCode::REPORT: return "report";
+    default: return "unknown";
+  }
+}
+
+std::string FP2Component::format_payload_hex_(const std::vector<uint8_t> &payload, size_t max_bytes) {
+  static const char hex[] = "0123456789abcdef";
+  std::string out;
+  size_t limit = std::min(max_bytes, payload.size());
+
+  for (size_t i = 0; i < limit; i++) {
+    if (i > 0)
+      out.push_back(' ');
+    out.push_back(hex[(payload[i] >> 4) & 0x0F]);
+    out.push_back(hex[payload[i] & 0x0F]);
+  }
+
+  if (payload.size() > limit)
+    out += " ...";
+
+  return out;
+}
+
+void FP2Component::publish_radar_debug_(const char *event, AttrId attr_id,
+                                        const std::vector<uint8_t> &payload) {
+  ESP_LOGI(TAG, "%s %s (0x%04X) len=%u data=%s",
+           event, attr_id_to_string_(attr_id), (uint16_t) attr_id,
+           static_cast<unsigned>(payload.size()), format_payload_hex_(payload, 96).c_str());
+
+  if (radar_debug_sensor_ == nullptr)
+    return;
+
+  std::string state(event);
+  state += " ";
+  state += attr_id_to_string_(attr_id);
+  state += " 0x";
+  static const char hex[] = "0123456789abcdef";
+  uint16_t attr_raw = (uint16_t) attr_id;
+  state.push_back(hex[(attr_raw >> 12) & 0x0F]);
+  state.push_back(hex[(attr_raw >> 8) & 0x0F]);
+  state.push_back(hex[(attr_raw >> 4) & 0x0F]);
+  state.push_back(hex[attr_raw & 0x0F]);
+  state += " len=";
+  state += std::to_string(payload.size());
+  if (!payload.empty()) {
+    state += " data=";
+    state += format_payload_hex_(payload, 80);
+  }
+  radar_debug_sensor_->publish_state(state);
 }
 
 void FP2Component::setup() {
@@ -31,38 +155,1128 @@ void FP2Component::setup() {
 
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
-  init_done_ = false;
+
+  // ZONEMGMT-03/04 (12-01): rehydrate any runtime-added zones from the NVS
+  // registry BEFORE anything below can gate check_initialization_() (which
+  // only ever runs once the first UART radar frame arrives). This must run
+  // before the web-handler registration block below so the existing
+  // full-resend reconciliation in check_initialization_() sees the complete
+  // zones_ set (compile-time + rehydrated runtime) on the very first pass.
+  rehydrate_zone_registry_();
+
+  zones_.reserve(32);
+
+  // check_initialization_() always boots into WORK_MODE=3 (Zone Detection);
+  // reflect that compiled default in the select immediately so it doesn't
+  // show "unknown" until the user first interacts with it.
+  if (this->operating_mode_select_ != nullptr) {
+    this->operating_mode_select_->publish_state(OPERATING_MODE_ZONE_DETECTION);
+  }
 
   // GPIO Reset
   perform_reset_();
+
+  // DIAG-02 (08-04): optional single-client raw-UART telnet bridge (D-05).
+  // No socket is created at all unless telnet_enable_ was explicitly set -
+  // default-disabled means no port opened (D-05/D-06).
+  if (telnet_enable_) {
+    telnet_listen_socket_ = socket::socket_ip_loop_monitored(SOCK_STREAM, 0);
+    if (telnet_listen_socket_ == nullptr) {
+      ESP_LOGW(TAG, "telnet: could not create listen socket");
+    } else {
+      int enable = 1;
+      telnet_listen_socket_->setsockopt(SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
+      telnet_listen_socket_->setblocking(false);
+      struct sockaddr_storage server;
+      socklen_t sl = socket::set_sockaddr_any((struct sockaddr *) &server, sizeof(server), telnet_port_);
+      telnet_listen_socket_->bind((struct sockaddr *) &server, sl);
+      telnet_listen_socket_->listen(1);  // backlog=1: single client only (D-05)
+      ESP_LOGW(TAG, "telnet raw UART bridge listening on port %u - LAN-ONLY, NO AUTHENTICATION. "
+                    "Never expose this port to the internet.", telnet_port_);
+    }
+  }
+
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  // Register the optional device-hosted /zones handlers only when the
+  // corresponding ESPHome web_server components are compiled in.
+  refresh_editor_snapshot_();
+  if (this->web_server_base_ != nullptr) {
+    this->web_server_base_->add_handler(new ::ZonesPageHandler());
+    this->web_server_base_->add_handler(new ::ZonesApiHandler(this));
+    if (this->web_server_ != nullptr) {
+      auto *sse = new esphome::web_server_idf::AsyncEventSource(esphome::StringRef::from_lit("/zones/events"), this->web_server_);
+      this->web_server_base_->add_handler(sse);
+      this->set_zone_editor_sse(sse);
+    }
+  }
+#endif
 }
 
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+void FP2Component::process_editor_command_() {
+  // Do not consume a submitted command until earlier main-loop API work settles.
+  if (save_pending()) return;
+  auto command = editor_mailbox_.take();
+  if (!command) return;
+  switch (command->action) {
+    case EditorAction::SAVE: save_zone_from_editor(command->zone_id, command->sensitivity, command->zone_type, command->grid); break;
+    case EditorAction::CREATE: add_zone_at_runtime(command->zone_id, command->sensitivity, command->zone_type); break;
+    case EditorAction::REMOVE: remove_zone_at_runtime(command->zone_id); break;
+    case EditorAction::RENAME: rename_zone_at_runtime(command->zone_id, command->name); break;
+  }
+  refresh_editor_snapshot_();
+}
+
+void FP2Component::refresh_editor_snapshot_() {
+  EditorSnapshot snapshot;
+  snapshot.map.clear();
+  snapshot.free_slots.clear();
+  JsonDocument map;
+  json_get_map_data(map.to<JsonObject>());
+  serializeJson(map, snapshot.map);
+  JsonDocument free_slots;
+  json_get_free_slots(free_slots.to<JsonObject>());
+  serializeJson(free_slots, snapshot.free_slots);
+  snapshot.pending = save_pending();
+  snapshot.ok = save_ok();
+  snapshot.error = save_error();
+  editor_last_pending_ = snapshot.pending;
+  editor_mailbox_.publish(std::move(snapshot));
+}
+#endif
+
 void FP2Component::perform_reset_() {
+  if (save_pending()) {
+    save_failed_ = true;
+    save_error_ = "radar reset before confirming the save";
+    pending_save_attr_ids_.clear();
+    save_batch_in_progress_ = false;
+  }
+  command_queue_.clear();
+  waiting_for_ack_attr_id_ = AttrId::INVALID;
+  init_done_ = false;
+  last_radar_frame_millis_ = 0;
+  last_heartbeat_millis_ = 0;
+
   if (reset_pin_ != nullptr) {
     ESP_LOGI(TAG, "Performing Hardware Reset via Pin...");
     reset_pin_->setup();
     reset_pin_->digital_write(false);
     delay(100);
     reset_pin_->digital_write(true);
-    ESP_LOGI(TAG, "Hardware Reset Done. Waiting for heartbeat...");
+    ESP_LOGI(TAG, "Hardware Reset Done. Waiting for radar traffic...");
   } else {
-    ESP_LOGI(TAG, "No Reset Pin configured. Waiting for heartbeat...");
+    ESP_LOGI(TAG, "No Reset Pin configured. Waiting for radar traffic...");
   }
 
   if (this->location_report_switch_ != nullptr) {
-    // Default to OFF for internal state until we know better, or optimistic?
-    // Device usually starts with it OFF.
-    this->location_report_switch_->publish_state(false);
+    this->location_report_switch_->publish_state(this->location_reporting_active_);
   }
 }
 
 void FP2Component::set_location_reporting_enabled(bool enabled) {
   this->location_reporting_active_ = enabled;
-  this->enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t)(enabled ? 1 : 0));
+  this->enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, enabled);
   if (!enabled && this->target_tracking_sensor_ != nullptr) {
     // Clear the sensor state when location reporting is disabled
     this->target_tracking_sensor_->set_has_state(false);
   }
+}
+
+void FP2Component::force_detection_config() {
+  desired_work_mode_ = 3;
+  sleep_mode_active_ = false;
+  ESP_LOGI(TAG, "Forcing radar detector/report configuration");
+  this->location_reporting_active_ = true;
+  if (this->location_report_switch_ != nullptr) {
+    this->location_report_switch_->publish_state(true);
+  }
+
+  enqueue_command_(OpCode::WRITE, AttrId::WORK_MODE, (uint8_t) 3);
+  enqueue_command_(OpCode::WRITE, AttrId::MOTION_DETECT, (uint8_t) 1);
+  enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT, (uint8_t) 1);
+  enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
+  enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, global_presence_sensitivity_);
+  enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);
+  enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, people_counting_report_enable_);
+  enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, people_number_enable_);
+  enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, target_type_enable_);
+
+  if (has_sleep_report_enable_) {
+    enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep_report_enable_);
+  }
+  if (has_posture_report_enable_) {
+    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, posture_report_enable_);
+  }
+}
+
+void FP2Component::read_detection_config() {
+  ESP_LOGI(TAG, "Queueing radar detector/report config reads");
+  enqueue_read_(AttrId::MOTION_DETECT);
+  enqueue_read_(AttrId::PRESENCE_DETECT);
+  enqueue_read_(AttrId::MONITOR_MODE);
+  enqueue_read_(AttrId::PRESENCE_DETECT_SENSITIVITY);
+  enqueue_read_(AttrId::LOCATION_REPORT_ENABLE);
+  enqueue_read_(AttrId::PEOPLE_COUNT_REPORT_ENABLE);
+  enqueue_read_(AttrId::PEOPLE_NUMBER_ENABLE);
+  enqueue_read_(AttrId::TARGET_TYPE_ENABLE);
+  enqueue_read_(AttrId::SLEEP_REPORT_ENABLE);
+  enqueue_read_(AttrId::POSTURE_REPORT_ENABLE);
+}
+
+void FP2Component::read_mode_calibration_config() {
+  ESP_LOGI(TAG, "Queueing radar mode/calibration/fall/sleep config reads");
+  enqueue_read_(AttrId::WORK_MODE);
+  enqueue_read_(AttrId::MONITOR_MODE);
+  enqueue_read_(AttrId::TARGET_TYPE_ENABLE);
+  enqueue_read_(AttrId::RADAR_CALIBRATION_RESULT);
+  enqueue_read_(AttrId::RESET_ABSENT_STATUS);
+  enqueue_read_(AttrId::MOTION_DETECT);
+  enqueue_read_(AttrId::PRESENCE_DETECT);
+  enqueue_read_(AttrId::PRESENCE_DETECT_SENSITIVITY);
+  enqueue_read_(AttrId::LOCATION_REPORT_ENABLE);
+  enqueue_read_(AttrId::FALL_DETECTION_RESULT);
+  enqueue_read_(AttrId::FALL_SENSITIVITY);
+  enqueue_read_(AttrId::FALL_OVERTIME_REPORT_PERIOD);
+  enqueue_read_(AttrId::FALL_OVERTIME_DETECTION);
+  enqueue_read_(AttrId::FALL_DELAY_TIME);
+  enqueue_read_(AttrId::SLEEP_REPORT_ENABLE);
+  enqueue_read_(AttrId::POSTURE_REPORT_ENABLE);
+  enqueue_read_(AttrId::SLEEP_MOUNT_POSITION);
+  enqueue_read_(AttrId::SLEEP_ZONE_SIZE);
+  enqueue_read_(AttrId::SLEEP_BED_HEIGHT);
+  enqueue_read_(AttrId::FALLDOWN_BLIND_ZONE);
+  enqueue_read_(AttrId::WALL_CORNER_POS);
+  enqueue_read_(AttrId::SLEEP_STATE);
+  enqueue_read_(AttrId::SLEEP_PRESENCE);
+  enqueue_read_(AttrId::SLEEP_INOUT_STATE);
+  enqueue_read_(AttrId::SLEEP_EVENT);
+  enqueue_read_(AttrId::SLEEP_EVENT_DESCRIPTOR);
+}
+
+void FP2Component::read_attr(uint16_t attr_id) {
+  AttrId attr = (AttrId) attr_id;
+  ESP_LOGI(TAG, "Queueing raw radar read for %s (0x%04X)", attr_id_to_string_(attr), attr_id);
+  enqueue_read_(attr);
+}
+
+void FP2Component::write_attr_uint8(uint16_t attr_id, uint8_t value) {
+  AttrId attr = (AttrId) attr_id;
+  ESP_LOGI(TAG, "Queueing raw UINT8 radar write for %s (0x%04X) = %u",
+           attr_id_to_string_(attr), attr_id, value);
+  enqueue_command_(OpCode::WRITE, attr, value);
+}
+
+void FP2Component::write_attr_uint16(uint16_t attr_id, uint16_t value) {
+  AttrId attr = (AttrId) attr_id;
+  ESP_LOGI(TAG, "Queueing raw UINT16 radar write for %s (0x%04X) = %u",
+           attr_id_to_string_(attr), attr_id, value);
+  enqueue_command_(OpCode::WRITE, attr, value);
+}
+
+void FP2Component::write_attr_uint32(uint16_t attr_id, uint32_t value) {
+  AttrId attr = (AttrId) attr_id;
+  ESP_LOGI(TAG, "Queueing raw UINT32 radar write for %s (0x%04X) = %lu",
+           attr_id_to_string_(attr), attr_id, value);
+  enqueue_command_(OpCode::WRITE, attr, value);
+}
+
+void FP2Component::write_attr_bool(uint16_t attr_id, bool value) {
+  AttrId attr = (AttrId) attr_id;
+  ESP_LOGI(TAG, "Queueing raw BOOL radar write for %s (0x%04X) = %u",
+           attr_id_to_string_(attr), attr_id, value ? 1 : 0);
+  enqueue_command_(OpCode::WRITE, attr, value);
+}
+
+void FP2Component::configure_sleep_mode(uint16_t width, uint16_t length, uint8_t mount_position) {
+  desired_work_mode_ = 9;
+  sleep_width_ = width;
+  sleep_length_ = length;
+  sleep_mount_ = mount_position;
+  uint32_t zone_size = ((uint32_t) width << 16) | (uint32_t) length;
+  std::vector<uint8_t> empty_zone(41, 0x00);
+
+  ESP_LOGI(TAG, "Queueing sleep mode setup width=%u length=%u mount=%u zone_size=0x%08lX",
+           width, length, mount_position, zone_size);
+
+  location_reporting_active_ = true;
+  if (location_report_switch_ != nullptr) {
+    location_report_switch_->publish_state(true);
+  }
+
+  // PROTO-02b (real-hardware finding, 2026-07-14): SLEEP_ZONE_SIZE and
+  // SLEEP_MOUNT_POSITION must be queued and ACKed BEFORE the WORK_MODE=9
+  // write. Per the reference fork (JameZUK/esphome_fp2_ng
+  // set_operating_mode()), the WORK_MODE write triggers a radar-side
+  // flash-save + self-restart into FW3 (Sleep/Vitals firmware); any
+  // parameter written after that point arrives too late to be captured by
+  // the flash save. FW3 then boots with no valid zone geometry, GTrack
+  // never allocates a track, and the radar goes spontaneous-report-silent
+  // (no heartbeat, no vitals) while still answering direct reads — exactly
+  // the failure observed live on fp2-sala. This block was previously
+  // ordered AFTER WORK_MODE=9 (a pre-existing bug predating PROTO-02, not
+  // introduced by it) and is corrected here to match the reference fork's
+  // write order.
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true);
+  enqueue_command_blob2_(AttrId::ZONE_MAP, empty_zone);
+  enqueue_command_blob2_(AttrId::ZONE_MAP, empty_zone);
+  enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_ZONE_SIZE, zone_size);
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, mount_position);
+
+  enqueue_command_(OpCode::WRITE, AttrId::WORK_MODE, (uint8_t) 9);
+
+  // PROTO-02: seed the heartbeat keepalive on sleep-mode entry. Safe to
+  // leave after WORK_MODE=9 even if the radar restarts immediately — this
+  // write is NOT part of the flash-saved config; it is a live protocol
+  // keepalive re-primed every heartbeat via handle_report_(), so a dropped
+  // seed write is harmless (the first post-restart heartbeat continues the
+  // sequence from sleep_heartbeat_counter_ = 0 regardless).
+  sleep_mode_active_ = true;
+  sleep_heartbeat_counter_ = 0;
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_HEARTBEAT_SYNC, (uint8_t) 0);
+}
+
+void FP2Component::set_work_mode(uint8_t mode) {
+  desired_work_mode_ = mode;
+  sleep_mode_active_ = mode == 9;
+  ESP_LOGI(TAG, "Setting radar work mode candidate to %u", mode);
+  enqueue_command_(OpCode::WRITE, AttrId::WORK_MODE, mode);
+}
+
+void FP2Component::set_ai_target_filter_enabled(bool enabled) {
+  ESP_LOGI(TAG, "Setting radar AI target filter to %s", enabled ? "enabled" : "disabled");
+  target_type_enable_ = enabled;
+  enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, enabled);
+}
+
+void FP2Component::calibrate_empty_room() {
+  ESP_LOGW(TAG, "Starting candidate empty-room calibration/reset via reset_absent_status");
+  enqueue_command_(OpCode::WRITE, AttrId::RESET_ABSENT_STATUS, true);
+}
+
+void FP2Component::reset_radar() {
+  ESP_LOGI(TAG, "Resetting radar module via diagnostic action");
+  perform_reset_();
+}
+
+void FP2Component::set_edge_auto_enabled(bool enabled) {
+  ESP_LOGI(TAG, "Setting edge auto detection to %s", enabled ? "enabled" : "disabled");
+  enqueue_command_(OpCode::WRITE, AttrId::EDGE_AUTO_ENABLE, enabled);
+}
+
+void FP2Component::set_interference_auto_enabled(bool enabled) {
+  ESP_LOGI(TAG, "Setting interference auto detection to %s", enabled ? "enabled" : "disabled");
+  enqueue_command_(OpCode::WRITE, AttrId::INTERFERENCE_AUTO_ENABLE, enabled);
+}
+
+bool FP2Component::persistence_failed_() {
+  save_failed_ = true;
+  save_error_ = "failed to persist settings to flash";
+  pending_save_attr_ids_.clear();
+  save_batch_in_progress_ = false;
+  return false;
+}
+
+std::string FP2Component::zone_preference_key_(uint8_t zone_id) const {
+  for (auto *zone : zones_) {
+    if (zone->id == zone_id) return zone_preference_key(zone_id, zone->persistence_identity);
+  }
+  return zone_preference_key(zone_id, "");
+}
+
+bool FP2Component::load_zone_override_(uint8_t zone_id, FP2ZoneOverride *out) {
+  auto pref = global_preferences->make_preference<FP2ZoneOverride>(
+      fnv1_hash(zone_preference_key_(zone_id)));
+  return pref.load(out) && out->version == FP2_OVERRIDE_VERSION;
+}
+
+bool FP2Component::save_zone_override_(uint8_t zone_id, const GridMap &grid, uint8_t sensitivity,
+                                        int zone_type) {
+  FP2ZoneOverride ov{FP2_OVERRIDE_VERSION, grid, sensitivity, (int16_t) zone_type};
+  auto pref = global_preferences->make_preference<FP2ZoneOverride>(
+      fnv1_hash(zone_preference_key_(zone_id)));
+  return persist_and_sync(pref, ov, [] { return global_preferences->sync(); });
+}
+
+// RENAME-01 (13.1.1-01): custom-name NVS load/save - exact mirror of
+// load_zone_override_()/save_zone_override_() above (same
+// make_preference<T>(fnv1_hash(...)) + sync() idiom, 09-RESEARCH.md Pattern
+// 4 / Finding 3), but keyed on a DISTINCT "fp2_zone_name_<id>" string and
+// versioned by the separate FP2_ZONE_NAME_VERSION constant - never
+// FP2_OVERRIDE_VERSION - so adding/changing a custom name can never
+// invalidate an existing FP2ZoneOverride blob.
+bool FP2Component::load_zone_name_(uint8_t zone_id, char *out, size_t out_len) {
+  FP2ZoneName tmp;
+  auto pref = global_preferences->make_preference<FP2ZoneName>(
+      fnv1_hash("fp2_zone_name_" + std::to_string(zone_id)));
+  if (!pref.load(&tmp) || tmp.version != FP2_ZONE_NAME_VERSION) {
+    return false;
+  }
+  // Defensive bound: tmp.name is itself a fixed char[32] guaranteed
+  // NUL-terminated by save_zone_name_()'s bounded copy below, but never
+  // trust a loaded NVS blob's terminator blindly.
+  strncpy(out, tmp.name, out_len - 1);
+  out[out_len - 1] = '\0';
+  return true;
+}
+
+bool FP2Component::save_zone_name_(uint8_t zone_id, const char *name) {
+  FP2ZoneName ov{FP2_ZONE_NAME_VERSION, {}};
+  // T-13.1.1-01: bounded copy of at most 31 chars + explicit NUL - never an
+  // unbounded copy into the fixed 32-byte buffer, regardless of what the
+  // caller passes (the httpd handler landing in Plan 02 also rejects an
+  // over-length name upstream with a 400, but this helper must not rely on
+  // that alone).
+  strncpy(ov.name, name, sizeof(ov.name) - 1);
+  ov.name[sizeof(ov.name) - 1] = '\0';
+  auto pref = global_preferences->make_preference<FP2ZoneName>(
+      fnv1_hash("fp2_zone_name_" + std::to_string(zone_id)));
+  return persist_and_sync(pref, ov, [] { return global_preferences->sync(); });
+}
+
+bool FP2Component::load_global_zone_override_(FP2GlobalZoneOverride *out) {
+  auto pref = global_preferences->make_preference<FP2GlobalZoneOverride>(
+      fnv1_hash("fp2_global_zone_override"));
+  return pref.load(out) && out->version == FP2_OVERRIDE_VERSION;
+}
+
+bool FP2Component::save_global_zone_override_(uint8_t presence_sensitivity) {
+  FP2GlobalZoneOverride ov{FP2_OVERRIDE_VERSION, presence_sensitivity};
+  auto pref = global_preferences->make_preference<FP2GlobalZoneOverride>(
+      fnv1_hash("fp2_global_zone_override"));
+  return persist_and_sync(pref, ov, [] { return global_preferences->sync(); });
+}
+
+// ZONEMGMT-03/04 (12-01): registry MEMBERSHIP load/save - exact mirror of
+// load_zone_override_()/save_zone_override_() above, but keyed on the fixed
+// literal "fp2_zone_registry_meta" (NOT per-zone-id), since membership is a
+// single 32-slot bitmask shared across all zone IDs.
+bool FP2Component::load_zone_registry_meta_(FP2ZoneRegistryMeta *out) {
+  auto pref = global_preferences->make_preference<FP2ZoneRegistryMeta>(
+      fnv1_hash("fp2_zone_registry_meta"));
+  return pref.load(out) && out->version == FP2_ZONE_REGISTRY_VERSION;
+}
+
+bool FP2Component::save_zone_registry_meta_(uint32_t active_mask) {
+  FP2ZoneRegistryMeta meta{FP2_ZONE_REGISTRY_VERSION, active_mask};
+  auto pref = global_preferences->make_preference<FP2ZoneRegistryMeta>(
+      fnv1_hash("fp2_zone_registry_meta"));
+  return persist_and_sync(pref, meta, [] { return global_preferences->sync(); });
+}
+
+// RENAME-01 (13.1.1-01): single source of truth for a runtime/rehydrated
+// zone's STABLE object_id_hash - must be called identically from both
+// rehydrate_zone_registry_() (below) and add_zone_at_runtime() so a zone's
+// HA entity identity (the wire `key` field) survives every reboot AND a
+// rename, instead of drifting if the two call sites ever computed the
+// canonical string differently. Built from the FIXED, never-renamed
+// canonical string "Zone {id} Presence" - deliberately NOT derived from the
+// zone's current (possibly custom) display name. fnv1_hash_object_id()
+// (esphome/core/helpers.h, transitively included via esphome/core/
+// component.h) applies the same snake_case+sanitize transform ESPHome's own
+// EntityBase::calc_object_id_() uses internally, so this value is
+// bit-identical to the hash an already-flashed device previously
+// auto-derived at object_id_hash=0 - existing entity identity is preserved,
+// not just new zones' (13.1.1-RESEARCH.md "Object ID Decoupling"). Defined
+// here, ahead of both call sites below, so no forward declaration is needed
+// (mirrors fp2_is_valid_zone_type_()'s single-source-of-truth placement
+// further down this file).
+static uint32_t fp2_stable_zone_object_id_hash_(uint8_t zone_id) {
+  std::string canonical = "Zone " + std::to_string(zone_id) + " Presence";
+  return fnv1_hash_object_id(canonical.c_str(), canonical.size());
+}
+
+// ZONEMGMT-03/04 (12-01): boot-time rehydration - reconstructs zones_ from
+// the NVS registry (active_mask + per-ID FP2ZoneOverride) BEFORE
+// check_initialization_() can ever run, so its existing full-resend
+// reconciliation naturally reconciles runtime-added zones with zero change
+// to check_initialization_() itself. Called once from setup() (12-RESEARCH.md
+// Pattern 1).
+void FP2Component::rehydrate_zone_registry_() {
+  FP2ZoneRegistryMeta meta;
+  if (!load_zone_registry_meta_(&meta)) {
+    // No runtime-added zones ever saved (or a version mismatch) - the
+    // compile-time zones_ set stands as-is. Not an error.
+    return;
+  }
+  for (uint8_t id = 0; id < 32; id++) {
+    if (!(meta.active_mask & (1u << id)))
+      continue;
+
+    // Pitfall 3: compile-time YAML zones and runtime-registry zones share
+    // the same 0-31 ID space via the same zones_ vector. A compile-time
+    // zone always owns its ID - never construct a duplicate runtime zone
+    // for an ID that is already present.
+    bool already_compiled = false;
+    for (const auto &z : zones_) {
+      if (z->id == id) {
+        already_compiled = true;
+        break;
+      }
+    }
+    if (already_compiled)
+      continue;
+
+    FP2ZoneOverride ov;
+    if (!load_zone_override_(id, &ov)) {
+      // active_mask says this ID is a registry-managed slot, but its
+      // content override is missing/corrupt. Never fabricate a default
+      // zone here - that would silently mask a registry-vs-override
+      // divergence. Log and skip; the slot simply stays absent from
+      // zones_ this boot.
+      ESP_LOGW(TAG, "rehydrate: active_mask bit %u set but no override - skipping", id);
+      continue;
+    }
+
+    FP2Zone *zone;
+    if (this->zone_slot_cache_[id] != nullptr) {
+      // Pitfall 4: reuse the ever-constructed object for this ID (from an
+      // earlier remove-then-re-add within this same boot session) rather
+      // than leaking a fresh allocation - ESPHome has no
+      // App.unregister_binary_sensor() to undo a prior registration.
+      zone = this->zone_slot_cache_[id];
+      zone->grid = ov.grid;
+      zone->sensitivity = ov.sensitivity;
+      if (ov.zone_type >= 0) {
+        zone->set_zone_type((uint8_t) ov.zone_type);
+      } else {
+        // WR-02 (12-06) parity fix: this reused FP2Zone object may carry a
+        // zone_type set during an earlier add-then-remove cycle this boot.
+        // A rehydrate whose override omits zone_type (sentinel -1) must not
+        // let that stale value leak into this zone's new life, same as
+        // add_zone_at_runtime() already does below - clear the unset marker.
+        zone->has_zone_type = false;
+      }
+      // Entity visibility is immutable after registration. ESPHome >=2026.7.2
+      // marks set_internal() at runtime as undefined behaviour; removed zones
+      // remain registered/unavailable and are safely reused here.
+    } else {
+      zone = new FP2Zone(id, ov.grid, ov.sensitivity);
+      if (ov.zone_type >= 0) {
+        zone->set_zone_type((uint8_t) ov.zone_type);
+      }
+      // RENAME-01 (13.1.1-01): load a persisted custom name (if any) into the
+      // live zone BEFORE registering, and register the HA-visible display
+      // name as custom_name when set, else the canonical default - the
+      // object_id_hash stays pinned to the canonical string either way (see
+      // the shared stable-hash helper above), so this display-name choice
+      // never affects HA entity identity.
+      this->load_zone_name_(id, zone->custom_name, sizeof(zone->custom_name));
+      std::string display_name = zone->custom_name[0] != '\0'
+                                      ? std::string(zone->custom_name)
+                                      : ("Zone " + std::to_string(id) + " Presence");
+      // Finding 2 (ported for ESPHome 2026.7.2): the name string must outlive
+      // the entity - configure_entity_() (invoked internally by the 4-arg
+      // App.register_binary_sensor() overload) stores it as a non-owning
+      // StringRef. Heap-allocate and never free (matches ESPHome codegen's
+      // own lifetime assumption: a string literal baked into flash forever).
+      // RENAME-01 (13.1.1-01): object_id_hash is now explicitly PINNED (see
+      // the shared stable-hash helper above) from the fixed canonical name -
+      // intentionally NOT auto-derived from the (possibly custom) display
+      // name, so a rename never changes this zone's HA entity/history. The
+      // pinned value is bit-identical to what auto-derive-from-name
+      // previously computed for the never-renamed canonical name, so
+      // already-flashed devices keep the same entity identity. device_class
+      // is intentionally left unset (entity_fields=0): 2026.7.2 device_class
+      // is a codegen-interned table index with no runtime string->index
+      // setter (D-2).
+      auto *name = new std::string(display_name);
+      auto *sensor = new binary_sensor::BinarySensor();
+      App.register_binary_sensor(sensor, name->c_str(), fp2_stable_zone_object_id_hash_(id), 0);
+      zone->set_presence_sensor(sensor);
+      this->zone_slot_cache_[id] = zone;
+    }
+    zones_.push_back(zone);
+  }
+}
+
+// ZONEMGMT-01 (12-02): add a new zone at runtime with zero YAML edits or
+// reflash. Define-before-activate ordering (12-RESEARCH.md Pattern 4):
+// ZONE_MAP/ZONE_SENSITIVITY/[DETECT_ZONE_TYPE]/ZONE_CLOSE_AWAY_ENABLE are
+// enqueued for the new ID BEFORE the rebuilt full ZONE_ACTIVATION_LIST - the
+// FIFO one-ACK-at-a-time command_queue_ guarantees this transmit order.
+void FP2Component::add_zone_at_runtime(uint8_t zone_id, uint8_t sensitivity, int zone_type) {
+  if (save_batch_in_progress_) {
+    save_failed_ = true;
+    save_error_ = "another save is already in progress";
+    return;
+  }
+  ++save_generation_;
+  // CR-01 fix (12-REVIEW): hand off pending-state ownership to
+  // pending_save_attr_ids_/save_failed_ now that this deferred call is
+  // actually running on the main loop - mirrors save_zone_from_editor()'s
+  // own precedent. Must run FIRST, before the duplicate-ID rejection below,
+  // so even a rejected (duplicate-ID) create call clears the flag the
+  // handle_post_create_ httpd handler set synchronously; otherwise
+  // save_pending() would wedge permanently true after the very first
+  // create/delete call of any outcome.
+  this->save_batch_in_progress_ = true;
+  // V5 (Pitfall 3): duplicate-ID guard scans the LIVE zones_ union - covers
+  // BOTH compile-time YAML zones and already-runtime-added zones, since they
+  // share one 0-31 ID space and one zones_ vector. Never derive this check
+  // from the NVS active_mask alone.
+  // CR-01 fix (12-REVIEW iter2): only an *active* entry counts as "in use" -
+  // zones_ never erases a removed zone anymore (see remove_zone_at_runtime()),
+  // so a previously-removed ID's now-inactive FP2Zone* must not block re-add.
+  for (const auto &z : zones_) {
+    if (z->active && z->id == zone_id) {
+      ESP_LOGW(TAG, "add_zone_at_runtime: zone_id %u already in use", zone_id);
+      save_failed_ = true;
+      save_error_ = std::string("zone_id ") + std::to_string(zone_id) + " already in use";
+      // WR-02 fix (12-REVIEW): a rejected request must leave save_pending()
+      // false, not permanently true (CR-01 wedge-avoidance precedent).
+      this->save_batch_in_progress_ = false;
+      return;
+    }
+  }
+
+  // WR-01 fix (12-REVIEW): zone_type must be -1 (sentinel = not set) or a
+  // ZONE_TYPES value - same allowlist as save_zone_to_sensor()'s check (c).
+  // Pushed down here (rather than only in handle_post_create_) so it applies
+  // uniformly to every caller of add_zone_at_runtime(), not just the one
+  // that happens to validate it today. Without this, an out-of-range
+  // zone_type would be truncated via (uint8_t) cast, persisted to NVS, and
+  // written to the radar's DETECT_ZONE_TYPE register as a value the
+  // firmware was never designed to receive.
+  // WR-02 fix (12-REVIEW #2): allowlist factored into fp2_is_valid_zone_type_()
+  // so this and save_zone_to_sensor()'s identical check can't drift apart.
+  if (!fp2_is_valid_zone_type_(zone_type)) {
+    ESP_LOGW(TAG, "add_zone_at_runtime: invalid zone_type %d", zone_type);
+    save_failed_ = true;
+    save_error_ = std::string("invalid zone_type ") + std::to_string(zone_type);
+    // WR-02 fix (12-REVIEW): clear so a rejected request never wedges
+    // save_pending() permanently true.
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+
+  // CR-02 fix (12-REVIEW #2): reject re-creating a zone_id that is present in
+  // zones_ (active or not - the duplicate-active-ID guard above only catches
+  // the still-active case) but was never tracked in zone_slot_cache_. That
+  // combination means this ID belongs to a compile-time YAML zone that was
+  // removed via /api/zones/delete - zone_slot_cache_ is populated only by
+  // rehydrate_zone_registry_() and this function's own reuse branch below,
+  // never by set_zones() (the compile-time path), so the reuse-vs-construct
+  // branch below would otherwise take the "construct fresh" path and
+  // push_back() a SECOND FP2Zone with the same id. Every id-keyed radar
+  // report dispatch loop (DETECT_ZONE_MOTION/ZONE_PRESENCE/
+  // ZONE_PEOPLE_NUMBER) breaks on first match, so the new, user-visible
+  // entity would never receive an update for the rest of the boot session.
+  for (const auto &z : zones_) {
+    if (z->id == zone_id && this->zone_slot_cache_[zone_id] == nullptr) {
+      ESP_LOGW(TAG, "add_zone_at_runtime: zone_id %u belongs to a compile-time zone and cannot "
+                    "be re-created here",
+               zone_id);
+      save_failed_ = true;
+      save_error_ = std::string("zone_id ") + std::to_string(zone_id) +
+                    " belongs to a compile-time zone and cannot be re-created here";
+      // WR-02 fix (12-REVIEW): clear so a rejected request never wedges
+      // save_pending() permanently true.
+      this->save_batch_in_progress_ = false;
+      return;
+    }
+  }
+
+  ESP_LOGI(TAG, "Adding runtime zone %u (sensitivity=%u, zone_type=%d)", zone_id, sensitivity,
+           zone_type);
+  save_failed_ = false;
+  save_error_.clear();
+  pending_save_attr_ids_.clear();
+
+  // D-04: a newly-created zone defaults to a full 14x14 active grid - it must
+  // be immediately functional since grid painting doesn't exist until Phase 13.
+  GridMap grid = FULL_ACTIVE_GRID;
+
+  // Persist FIRST, durable before the radar sequence: the per-ID content
+  // override and the registry membership bit. Both sync()-flush (12-01/
+  // Finding 3) so a power cut right after this point can never diverge NVS
+  // from whatever gets enqueued to the radar below.
+  if (!save_zone_override_(zone_id, grid, sensitivity, zone_type)) { persistence_failed_(); return; }
+  FP2ZoneRegistryMeta meta;
+  uint32_t active_mask = load_zone_registry_meta_(&meta) ? meta.active_mask : 0;
+  active_mask |= (1u << zone_id);
+  if (!save_zone_registry_meta_(active_mask)) { persistence_failed_(); return; }
+
+  // Entity: reuse the cached FP2Zone/BinarySensor for this ID if this slot
+  // was ever constructed earlier this boot (Pitfall 4 - un-hide rather than
+  // leak a fresh allocation on re-add, since ESPHome has no
+  // App.unregister_binary_sensor()); otherwise construct fresh (Pattern 3).
+  FP2Zone *zone;
+  if (this->zone_slot_cache_[zone_id] != nullptr) {
+    zone = this->zone_slot_cache_[zone_id];
+    zone->grid = grid;
+    zone->sensitivity = sensitivity;
+    if (zone_type >= 0) {
+      zone->set_zone_type((uint8_t) zone_type);
+    } else {
+      // WR-02 (12-06): this reused FP2Zone object may carry a zone_type set
+      // during an earlier add-then-remove cycle this boot. A create call
+      // that omits zone_type (sentinel -1) must not let that stale value
+      // leak into this zone's new life - clear the unset marker explicitly.
+      zone->has_zone_type = false;
+    }
+    // Do not call set_internal(false) here: runtime mutation of the internal
+    // flag is undefined in ESPHome >=2026.7.2. The entity stays registered
+    // and becomes available again when a new state is published.
+    // WR-01 fix (12-REVIEW): clear stale motion/debounce state from this
+    // object's prior life (add-then-remove earlier this boot) BEFORE
+    // reactivating - otherwise a leftover motion_active/last_motion_millis
+    // could resurrect a phantom "motion on" state for the zone's new life.
+    zone->reset_motion();
+    // CR-01 fix (12-REVIEW iter2): this object is already an entry in
+    // zones_ from an earlier add-then-remove cycle this boot session (never
+    // erased, only deactivated below) - reactivate in place. Do NOT
+    // push_back() again, or this ID would appear twice in zones_.
+    zone->active = true;
+  } else {
+    zone = new FP2Zone(zone_id, grid, sensitivity);
+    if (zone_type >= 0) {
+      zone->set_zone_type((uint8_t) zone_type);
+    }
+    // Finding 2 (ported for ESPHome 2026.7.2): the name string must outlive
+    // the entity - configure_entity_() (invoked internally by the 4-arg
+    // App.register_binary_sensor() overload) stores it as a non-owning
+    // StringRef. Heap-allocate and never free (matches ESPHome codegen's own
+    // lifetime assumption for a compile-time string literal baked into flash
+    // forever). RENAME-01 (13.1.1-01): object_id_hash is now explicitly
+    // PINNED (see the shared stable-hash helper near rehydrate_zone_registry_())
+    // from the fixed canonical name - intentionally NOT auto-derived from
+    // the (possibly custom) display name, so a rename never changes this
+    // zone's HA entity/history. device_class is intentionally left unset
+    // (entity_fields=0): 2026.7.2 device_class is a codegen-interned table
+    // index with no runtime string->index setter (D-2).
+    auto *name = new std::string("Zone " + std::to_string(zone_id) + " Presence");
+    auto *sensor = new binary_sensor::BinarySensor();
+    // D-02: visible to HA after next ListEntitiesRequest
+    App.register_binary_sensor(sensor, name->c_str(), fp2_stable_zone_object_id_hash_(zone_id), 0);
+    zone->set_presence_sensor(sensor);
+    this->zone_slot_cache_[zone_id] = zone;
+    zones_.push_back(zone);
+  }
+
+  // UART sequence - DEFINE first.
+  std::vector<uint8_t> payload;
+  payload.push_back(zone_id);
+  payload.insert(payload.end(), grid.begin(), grid.end());
+  enqueue_command_blob2_(AttrId::ZONE_MAP, payload);
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_MAP);
+
+  enqueue_command_(OpCode::WRITE, AttrId::ZONE_SENSITIVITY,
+                    (uint16_t)((zone_id << 8) | (sensitivity & 0xFF)));
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_SENSITIVITY);
+
+  if (zone_type >= 0) {
+    enqueue_command_(OpCode::WRITE, AttrId::DETECT_ZONE_TYPE,
+                      (uint16_t)((zone_id << 8) | ((uint8_t) zone_type & 0xFF)));
+    command_queue_.back().save_generation = save_generation_;
+    pending_save_attr_ids_.push_back(AttrId::DETECT_ZONE_TYPE);
+  }
+
+  enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t)((zone_id << 8) | 1));
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_CLOSE_AWAY_ENABLE);
+
+  // ACTIVATE last: rebuild the full 32-byte list from the now-updated
+  // zones_ - mirrors check_initialization_()'s activation-rebuild loop
+  // exactly (the single source of truth for "what is active now").
+  std::vector<uint8_t> activations(32, 0);
+  for (const auto &z : zones_) {
+    // CR-01 fix (12-REVIEW iter2): zones_ now retains removed zones as
+    // inactive entries rather than erasing them - skip them so a
+    // deactivated zone is never re-activated on the radar by this rebuild.
+    if (!z->active)
+      continue;
+    activations[z->id] = z->id;
+  }
+  enqueue_command_blob2_(AttrId::ZONE_ACTIVATION_LIST, activations);
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_ACTIVATION_LIST);
+}
+
+void FP2Component::rename_zone_at_runtime(uint8_t zone_id, const std::string &name) {
+  save_failed_ = false;
+  save_error_.clear();
+  if (!is_runtime_zone(zone_id) || !zone_slot_cache_[zone_id]->active || name.empty() || name.size() > 31 ||
+      std::any_of(name.begin(), name.end(), [](unsigned char ch) { return ch < 0x20 || ch == 0x7f; })) {
+    save_failed_ = true;
+    save_error_ = "invalid runtime zone or name";
+    return;
+  }
+  if (!save_zone_name_(zone_id, name.c_str())) { persistence_failed_(); return; }
+  auto *zone = zone_slot_cache_[zone_id];
+  strncpy(zone->custom_name, name.c_str(), sizeof(zone->custom_name) - 1);
+  zone->custom_name[sizeof(zone->custom_name) - 1] = '\0';
+}
+
+// ZONEMGMT-02 (12-02): remove an existing zone at runtime with zero YAML
+// edits or reflash. Deactivate-before-clear ordering (12-RESEARCH.md
+// Pattern 5): the rebuilt ZONE_ACTIVATION_LIST (with this ID zeroed) is
+// enqueued BEFORE the ZONE_MAP hygiene clear, so the radar stops treating
+// the ID as real before any grid data is touched.
+void FP2Component::remove_zone_at_runtime(uint8_t zone_id) {
+  if (save_batch_in_progress_) {
+    save_failed_ = true;
+    save_error_ = "another save is already in progress";
+    return;
+  }
+  ++save_generation_;
+  // CR-01 fix (12-REVIEW): see add_zone_at_runtime()'s identical comment -
+  // must run first, before the not-found rejection below, so a rejected
+  // delete call also clears the flag handle_post_delete_ set synchronously.
+  this->save_batch_in_progress_ = true;
+  // CR-01 fix (12-REVIEW iter2): match only an *active* entry - a
+  // previously-removed ID's now-inactive FP2Zone* stays in zones_ (see
+  // below), so without the active check a double-remove would silently
+  // "succeed" a second time on the same already-inactive object instead of
+  // correctly reporting zone_id not found.
+  auto it = std::find_if(zones_.begin(), zones_.end(),
+                          [zone_id](FP2Zone *z) { return z->active && z->id == zone_id; });
+  if (it == zones_.end()) {
+    ESP_LOGW(TAG, "remove_zone_at_runtime: zone_id %u not found", zone_id);
+    save_failed_ = true;
+    save_error_ = std::string("zone_id ") + std::to_string(zone_id) + " not found";
+    // WR-02 fix (12-REVIEW): a rejected request must leave save_pending()
+    // false, not permanently true (CR-01 wedge-avoidance precedent).
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+
+  // WR-03 (12-06): reject deleting a compile-time (YAML-declared) zone -
+  // mirrors add_zone_at_runtime()'s CR-02 guard idiom. zone_id has already
+  // matched an active zones_ entry above, so zone_slot_cache_[zone_id] is
+  // safe to index here; a null entry means this ID was never tracked by
+  // rehydrate_zone_registry_() or this function's own reuse branch, i.e. it
+  // belongs to the compile-time set_zones() path. Without this guard the
+  // deactivation below would "succeed" from the UI's perspective, but the
+  // next boot's set_zones() call resurrects the zone anyway - reporting a
+  // deletion that silently does not persist.
+  if (this->zone_slot_cache_[zone_id] == nullptr) {
+    ESP_LOGW(TAG, "remove_zone_at_runtime: zone_id %u belongs to a compile-time zone", zone_id);
+    save_failed_ = true;
+    save_error_ = std::string("zone_id ") + std::to_string(zone_id) +
+                  " belongs to a compile-time zone and cannot be removed here";
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+
+  ESP_LOGI(TAG, "Removing runtime zone %u", zone_id);
+  save_failed_ = false;
+  save_error_.clear();
+  pending_save_attr_ids_.clear();
+
+  // NVS: clear this ID's membership bit and persist (syncs). Leave the
+  // per-ID FP2ZoneOverride content in place - harmless dead data only ever
+  // read for IDs currently in zones_, and a future add always rewrites it
+  // fresh; no explicit wipe is load-bearing for correctness.
+  FP2ZoneRegistryMeta meta;
+  uint32_t active_mask = load_zone_registry_meta_(&meta) ? meta.active_mask : 0;
+  active_mask &= ~(1u << zone_id);
+  if (!save_zone_registry_meta_(active_mask)) { persistence_failed_(); return; }
+
+  FP2Zone *zone = *it;
+  zone->active = false;
+
+  // UART sequence - DEACTIVATE first.
+  std::vector<uint8_t> activations(32, 0);
+  for (const auto &z : zones_) {
+    if (!z->active)
+      continue;
+    activations[z->id] = z->id;
+  }
+  enqueue_command_blob2_(AttrId::ZONE_ACTIVATION_LIST, activations);
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_ACTIVATION_LIST);
+
+  // CLEAR second (hygiene) - not load-bearing for correctness (the "define"
+  // step of a future add always rewrites this ID's ZONE_MAP fresh), but
+  // avoids leaving a real grid sitting at a deactivated ID.
+  std::vector<uint8_t> empty_zone(41, 0x00);
+  empty_zone[0] = zone_id;
+  enqueue_command_blob2_(AttrId::ZONE_MAP, empty_zone);
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_MAP);
+
+  // HA entities remain registered for the lifetime of the device. Mark their
+  // state unavailable, but do not mutate EntityBase::internal at runtime:
+  // ESPHome >=2026.7.2 documents that as undefined behaviour and does not
+  // notify Home Assistant clients.
+  if (zone->presence_sensor != nullptr) {
+    zone->presence_sensor->invalidate_state();
+  }
+  if (zone->motion_sensor != nullptr) {
+    zone->motion_sensor->invalidate_state();
+  }
+
+
+}
+
+// RUN-04 (09-01/09-03): live single-register Global Zone presence_sensitivity
+// save. Write-and-forget (D-03) - ACK-of-write is the only success signal,
+// no read-back attempted. On the valid path this also persists the value to
+// NVS (save_global_zone_override_(), 09-03) so it survives a host reboot
+// without a reflash, and registers the write in the pending-save batch so
+// the HA action's wait_until: condition (save_pending()) can observe real
+// completion.
+void FP2Component::save_global_zone_to_sensor(uint8_t sensitivity) {
+  if (save_batch_in_progress_) {
+    save_failed_ = true;
+    save_error_ = "another save is already in progress";
+    return;
+  }
+  ++save_generation_;
+  // V5: validate before any enqueue - out-of-range input never reaches the UART.
+  if (sensitivity < 1 || sensitivity > 3) {
+    ESP_LOGW(TAG, "save_global_zone_to_sensor: invalid sensitivity %u (must be 1-3)", sensitivity);
+    save_failed_ = true;
+    save_error_ = std::string("invalid sensitivity ") + std::to_string(sensitivity) +
+                  " (must be 1-3)";
+    return;
+  }
+
+  ESP_LOGI(TAG, "Queueing Global Zone presence_sensitivity save = %u", sensitivity);
+  save_failed_ = false;
+  save_error_.clear();
+  pending_save_attr_ids_.clear();
+  save_batch_in_progress_ = true;
+  if (!save_global_zone_override_(sensitivity)) { persistence_failed_(); return; }
+  enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, sensitivity);
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::PRESENCE_DETECT_SENSITIVITY);
+
+  // CR-01 (12-06): mirror the just-saved value into the live member so a
+  // later force_detection_config() (fired independently, e.g. from a
+  // diagnostic action) re-writes THIS value to the radar instead of
+  // silently reverting to whatever was in global_presence_sensitivity_
+  // before this save. Only on the all-valid path - a rejected input above
+  // returns before reaching here and never touches the mirror.
+  this->global_presence_sensitivity_ = sensitivity;
+
+  // RUN-02 (09-03): persist to NVS so this survives a host reboot without a
+  // reflash. Only reached on the all-valid path (after the enqueue above) -
+  // a rejected input never persists.
+
+}
+
+// Returns 0-15 for a valid hex digit, -1 otherwise. Avoids pulling in
+// <cctype>/locale-dependent isxdigit() for a fixed ASCII hex alphabet.
+static int fp2_hex_nibble_(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// RUN-01 (09-02/09-03): live scoped-to-one-zone save (grid + sensitivity +
+// zone_type) for an already-compiled zone. All validation (V5) happens here,
+// before any enqueue_command_ call - this is the first full-payload
+// runtime-writable input reaching a live UART write in this codebase.
+// Replicates check_initialization_()'s per-zone register sequence
+// (fp2_component.cpp ~594-611) scoped to ONE zone; does NOT resend
+// ZONE_ACTIVATION_LIST (D-04) and does NOT attempt a read-back (D-03). On
+// the valid path also persists to NVS (save_zone_override_(), 09-03) so the
+// value survives a host reboot without a reflash.
+void FP2Component::save_zone_to_sensor(uint8_t zone_id, const std::string &grid_hex,
+                                        uint8_t sensitivity, int zone_type) {
+  if (save_batch_in_progress_) {
+    save_failed_ = true;
+    save_error_ = "another save is already in progress";
+    return;
+  }
+  ++save_generation_;
+  this->save_batch_in_progress_ = true;
+  // (a) zone_id must match an actually-compiled zone (Pitfall 2) - a linear
+  // search of zones_, NOT a bare 0-31 protocol-range check. zones_ is tiny
+  // (0-2 entries in practice), so this is cheap.
+  // CR-01 fix (12-REVIEW iter2): a runtime-removed zone stays in zones_ as
+  // an inactive entry (never erased - see remove_zone_at_runtime()), so
+  // this membership check must require active, or a save could be accepted
+  // for a zone the user just removed.
+  bool zone_found = false;
+  for (const auto &zone : zones_) {
+    if (zone->active && zone->id == zone_id) {
+      zone_found = true;
+      break;
+    }
+  }
+  if (!zone_found) {
+    ESP_LOGW(TAG, "save_zone_to_sensor: zone_id %u is not a compiled zone", zone_id);
+    save_failed_ = true;
+    save_error_ = std::string("zone_id ") + std::to_string(zone_id) + " is not a compiled zone";
+    // WR-02 fix (12-REVIEW): a rejected request must leave save_pending()
+    // false, not permanently true (CR-01 wedge-avoidance precedent).
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+
+  // (b) sensitivity must be in {1,2,3}.
+  if (sensitivity < 1 || sensitivity > 3) {
+    ESP_LOGW(TAG, "save_zone_to_sensor: invalid sensitivity %u (must be 1-3)", sensitivity);
+    save_failed_ = true;
+    save_error_ = std::string("invalid sensitivity ") + std::to_string(sensitivity) +
+                  " (must be 1-3)";
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+
+  // (c) zone_type must be -1 (sentinel = not set) or a ZONE_TYPES value.
+  // WR-02 fix (12-REVIEW #2): allowlist factored into fp2_is_valid_zone_type_()
+  // so this and add_zone_at_runtime()'s identical check can't drift apart.
+  if (!fp2_is_valid_zone_type_(zone_type)) {
+    ESP_LOGW(TAG, "save_zone_to_sensor: invalid zone_type %d", zone_type);
+    save_failed_ = true;
+    save_error_ = std::string("invalid zone_type ") + std::to_string(zone_type);
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+
+  // (d) grid_hex must be exactly 80 hex characters (40 bytes).
+  if (grid_hex.size() != 80) {
+    ESP_LOGW(TAG, "save_zone_to_sensor: grid_hex length %u (must be 80)",
+             (unsigned) grid_hex.size());
+    save_failed_ = true;
+    save_error_ = std::string("grid_hex must be exactly 80 hex characters, got ") +
+                  std::to_string(grid_hex.size());
+    this->save_batch_in_progress_ = false;
+    return;
+  }
+  GridMap grid{};
+  for (size_t i = 0; i < 40; i++) {
+    int hi = fp2_hex_nibble_(grid_hex[i * 2]);
+    int lo = fp2_hex_nibble_(grid_hex[i * 2 + 1]);
+    if (hi < 0 || lo < 0) {
+      ESP_LOGW(TAG, "save_zone_to_sensor: grid_hex contains a non-hex character");
+      save_failed_ = true;
+      save_error_ = "grid_hex contains a non-hex character";
+      this->save_batch_in_progress_ = false;
+      return;
+    }
+    grid[i] = (uint8_t)((hi << 4) | lo);
+  }
+
+  // All valid - clear any prior failure state. save_batch_in_progress_ was
+  // already opened as this function's first statement (WR-02 fix).
+  ESP_LOGI(TAG, "Queueing zone %u save (sensitivity=%u, zone_type=%d)", zone_id, sensitivity,
+           zone_type);
+  save_failed_ = false;
+  save_error_.clear();
+  pending_save_attr_ids_.clear();
+
+  if (!save_zone_override_(zone_id, grid, sensitivity, zone_type)) { persistence_failed_(); return; }
+
+  // 1. ZONE_MAP (0x0114): [ZoneID] [40-byte grid], BLOB2.
+  std::vector<uint8_t> payload;
+  payload.push_back(zone_id);
+  payload.insert(payload.end(), grid.begin(), grid.end());
+  enqueue_command_blob2_(AttrId::ZONE_MAP, payload);
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_MAP);
+
+  // 2. ZONE_SENSITIVITY (0x0151): UINT16 (High=ID, Low=Sensitivity).
+  enqueue_command_(OpCode::WRITE, AttrId::ZONE_SENSITIVITY,
+                    (uint16_t)((zone_id << 8) | (sensitivity & 0xFF)));
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_SENSITIVITY);
+
+  // 3. DETECT_ZONE_TYPE (0x0152), only if the caller set one.
+  if (zone_type >= 0) {
+    enqueue_command_(OpCode::WRITE, AttrId::DETECT_ZONE_TYPE,
+                      (uint16_t)((zone_id << 8) | ((uint8_t) zone_type & 0xFF)));
+    command_queue_.back().save_generation = save_generation_;
+    pending_save_attr_ids_.push_back(AttrId::DETECT_ZONE_TYPE);
+  }
+
+  // 4. ZONE_CLOSE_AWAY_ENABLE (0x0153): UINT16 (High=ID, Low=1/enabled).
+  // NOTE (D-04): the 32-byte auxiliary activation-list register is
+  // intentionally NOT resent here - it's only relevant when adding/removing
+  // zones, out of scope for editing an already-compiled zone.
+  enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE,
+                    (uint16_t)((zone_id << 8) | 1));
+  command_queue_.back().save_generation = save_generation_;
+  pending_save_attr_ids_.push_back(AttrId::ZONE_CLOSE_AWAY_ENABLE);
+
+  // RUN-02 (09-03): persist to NVS so this survives a host reboot without a
+  // reflash. Only reached on the all-valid path (after all enqueues above) -
+  // a rejected input never persists.
+
+
+  // WR-01 (12-06): mirror the just-saved grid/sensitivity/zone_type into the
+  // matched in-memory FP2Zone and re-publish its map_sensor, so GET
+  // /api/zones and the map_sensor text sensor reflect this save immediately
+  // instead of showing pre-save data until the next reboot re-hydrates from
+  // NVS. Only on the all-valid path (after the NVS persist above) - every
+  // rejected/early-return branch above returns before reaching here.
+  for (auto *zone : zones_) {
+    if (zone->active && zone->id == zone_id) {
+      zone->grid = grid;
+      zone->sensitivity = sensitivity;
+      if (zone_type >= 0) {
+        zone->set_zone_type((uint8_t) zone_type);
+      } else {
+        zone->has_zone_type = false;
+      }
+      if (zone->map_sensor != nullptr) {
+        zone->map_sensor->publish_state(grid_to_hex_card_format(zone->grid));
+      }
+      break;
+    }
+  }
+}
+
+// WEBUI-02 (11-03): server-side grid lookup for the device-hosted /zones
+// editor's POST /api/zones/save handler. The editor never sends a grid over
+// the wire (D-01) - only zone_id/sensitivity/zone_type are parsed from the
+// request, and this method resolves the already-compiled zone's 40-byte
+// grid by zone_id before delegating to save_zone_to_sensor(), which performs
+// every validation (zone_id membership, sensitivity range, zone_type
+// allowlist, grid_hex length/charset) unchanged (V5 reuse - no new
+// validation added here).
+// WEBUI-04 (13-01): grid_hex is now an optional trailing param (default ""
+// lives only in the header declaration, not repeated here). When the caller
+// (the /zones painting UI, via handle_post_save_()) supplies a non-empty
+// client-painted grid, it is already the canonical 80-char hex form and is
+// used as-is - no re-encoding. When empty (every pre-existing caller), the
+// server-side zones_ lookup below runs unchanged.
+void FP2Component::save_zone_from_editor(uint8_t zone_id, uint8_t sensitivity, int zone_type,
+                                          const std::string &grid_hex) {
+  // CR-01 fix (11-03): hand off pending-state ownership to
+  // pending_save_attr_ids_/save_failed_ (set below, inside
+  // save_zone_to_sensor()) now that this is actually running on the main
+  // loop. There is no gap: save_pending() ORs both fields, and this clear
+  // happens immediately before the call that populates the other field.
+  std::string hex = grid_hex;
+  if (hex.empty()) {
+    // CR-01 fix (12-REVIEW iter2): skip inactive (runtime-removed) entries -
+    // save_zone_to_sensor()'s own (a) check below already rejects a removed
+    // zone_id, so leaving hex empty for it is correct either way, but
+    // matching the active-only convention avoids reading a stale grid off a
+    // hidden/removed zone.
+    for (const auto &zone : zones_) {
+      if (zone->active && zone->id == zone_id) {
+        // Build all 40 bytes as an 80-char lowercase hex string. Deliberately
+        // NOT grid_to_hex_card_format() - that helper emits only 56 chars (14
+        // rows) for the /zones list view's display, which would fail
+        // save_zone_to_sensor()'s exactly-80-character length check.
+        char byte_hex[3];
+        for (size_t i = 0; i < zone->grid.size(); i++) {
+          snprintf(byte_hex, sizeof(byte_hex), "%02x", zone->grid[i]);
+          hex += byte_hex;
+        }
+        break;
+      }
+    }
+    // If zone_id isn't found, hex stays empty - save_zone_to_sensor()
+    // rejects unknown zone_id first (its own (a) check), so an empty hex
+    // never reaches the (d) length check.
+  }
+  // WEBUI-04: when a non-empty client grid was supplied above, it is used
+  // directly here without re-encoding. Its hex-charset validity ((d) check)
+  // is deliberately delegated to save_zone_to_sensor() below, not duplicated
+  // here - see 13-PATTERNS.md "Validation delegate to reuse, do not
+  // duplicate".
+  this->save_zone_to_sensor(zone_id, hex, sensitivity, zone_type);
 }
 
 void FP2LocationSwitch::write_state(bool state) {
@@ -72,44 +1286,253 @@ void FP2LocationSwitch::write_state(bool state) {
   this->publish_state(state);
 }
 
+// PROTO-04 (D-04): operating_mode select control() reuses the existing,
+// hardware-confirmed WORK_MODE write path (set_work_mode()) directly - no
+// parallel write path, no mcu_ota/XMODEM. Sleep Monitoring routes through
+// configure_sleep_mode() so the companion sleep-zone params +
+// SLEEP_REPORT_ENABLE precede the WORK_MODE=9 write, per PROTO-02b's
+// write-order fix. Only the three known option strings are honored; any
+// other value is ignored (the ESPHome select platform already constrains
+// inputs to the registered options list - this is defense in depth).
+void FP2OperatingModeSelect::control(const std::string &value) {
+  if (this->parent_ == nullptr) {
+    return;
+  }
+
+  if (value == OPERATING_MODE_ZONE_DETECTION) {
+    this->parent_->set_work_mode(3);
+  } else if (value == OPERATING_MODE_FALL_DETECTION) {
+    this->parent_->set_work_mode(8);
+  } else if (value == OPERATING_MODE_SLEEP_MONITORING) {
+    // Defaults match the documented, hardware-confirmed "stock capture"
+    // sleep setup (README.md fp2_configure_sleep_mode: width=120,
+    // length=180, mount_position=1).
+    this->parent_->configure_sleep_mode(120, 180, 1);
+  } else {
+    ESP_LOGW(TAG, "operating_mode select: ignoring unknown option '%s'", value.c_str());
+    return;
+  }
+
+  this->publish_state(value);
+}
+
 void FP2Component::loop() {
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  process_editor_command_();
+#endif
+  // DIAG-02 (08-04): accept a new telnet client. Single client only (D-05) -
+  // a new connection replaces the existing one rather than being rejected.
+  if (telnet_listen_socket_ && telnet_listen_socket_->ready()) {
+    struct sockaddr_storage addr;
+    socklen_t addr_len = sizeof(addr);
+    auto sock = telnet_listen_socket_->accept_loop_monitored((struct sockaddr *) &addr, &addr_len);
+    if (sock) {
+      if (telnet_client_) {
+        ESP_LOGI(TAG, "telnet: replacing existing client");
+      }
+      telnet_client_ = std::move(sock);
+      telnet_client_->setblocking(false);
+    }
+  }
+
   while (available()) {
     uint8_t byte;
     read_byte(&byte);
+    telnet_mirror_(&byte, 1);  // DIAG-02 (08-04): RX mirror, pure side effect
     handle_incoming_byte_(byte);
   }
 
+  // DIAG-02 (08-04): periodic non-blocking drain of any bytes the telnet
+  // client sends us. We never act on them (read-only mirror, not a command
+  // channel) - this exists solely to detect disconnects (read()==0) and
+  // avoid unbounded kernel send-buffer growth on a never-draining client
+  // (RESEARCH Open Question 2 / T-08-09).
+  if (telnet_client_) {
+    uint8_t drain_buf[32];
+    ssize_t n = telnet_client_->read(drain_buf, sizeof(drain_buf));
+    if (n == 0) {
+      ESP_LOGI(TAG, "telnet: client disconnected");
+      telnet_client_.reset();
+    }
+  }
+
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  if (this->zone_editor_sse_ != nullptr) {
+    this->zone_editor_sse_->loop();
+    bool has_clients = !this->zone_editor_sse_->empty();
+    if (has_clients && !this->sse_reporting_active_) {
+      this->sse_forced_reporting_on_ = !this->location_reporting_active_;
+      if (this->sse_forced_reporting_on_) {
+        this->set_location_reporting_enabled(true);
+      }
+      this->sse_reporting_active_ = true;
+    } else if (!has_clients && this->sse_reporting_active_) {
+      if (this->sse_forced_reporting_on_) {
+        this->set_location_reporting_enabled(false);
+        this->sse_forced_reporting_on_ = false;
+      }
+      this->sse_reporting_active_ = false;
+    }
+  }
+#endif
+
+  check_radar_watchdog_();
   check_initialization_();
   process_command_queue_();
+  expire_derived_states_();
+
+  // Release zone motion sensors once their debounce timeout expires.
+  // CR-01 fix (12-REVIEW iter2): skip inactive (runtime-removed) zones -
+  // they're already hidden/invalidated by remove_zone_at_runtime() and
+  // should not have their debounce state ticked further.
+  uint32_t now = millis();
+  for (auto &z : zones_) {
+    if (!z->active)
+      continue;
+    z->tick_motion(now);
+  }
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  if (editor_mailbox_.needs_refresh() || editor_last_pending_ != save_pending()) refresh_editor_snapshot_();
+#endif
+}
+
+void FP2Component::check_radar_watchdog_() {
+  if (!init_done_) return;
+  const uint32_t now = millis();
+  // Zero explicitly disables traffic timeout; a reported radar reboot still recovers.
+  if (!radar_reboot_pending_ && (radar_timeout_ms_ == 0 || !radar_traffic_expired(now, last_radar_frame_millis_, radar_timeout_ms_))) return;
+  if (now - recovery_millis_ < 5000) return;
+  recovery_millis_ = now;
+  radar_reboot_pending_ = false;
+  if (save_pending()) {
+    save_failed_ = true;
+    save_error_ = "radar restarted before confirming the save";
+    pending_save_attr_ids_.clear();
+    save_batch_in_progress_ = false;
+  }
+  ESP_LOGW(TAG, "Radar traffic lost or radar reboot reported; restoring configuration");
+  perform_reset_();
+  derived_seen_ = false;
+  zone_derived_seen_.fill(false);
+  state_ = SYNC;
+}
+
+uint8_t FP2Component::update_derived_states_(const std::vector<uint8_t> &blob, uint8_t count) {
+  const uint32_t now = millis();
+  std::array<const TargetGrid *, 32> zones{};
+  for (auto *zone : zones_) if (zone->active && zone->id < 32) zones[zone->id] = &zone->grid;
+  auto result = derive_targets(blob, count, mounting_position_, wall_units_per_cell_,
+                              has_edge_grid_ ? &edge_grid_ : nullptr,
+                              has_interference_grid_ ? &interference_grid_ : nullptr,
+                              ignore_exit_targets_ && has_exit_grid_ ? &exit_grid_ : nullptr,
+                              require_active_target_, zones);
+  const uint8_t valid = result.count;
+  const bool motion = result.motion;
+  const auto &hits = result.zone_counts;
+  const auto &moving = result.zone_motion;
+  if (valid) {
+    derived_seen_ = true;
+    derived_last_seen_ = now;
+    if (global_presence_sensor_) global_presence_sensor_->publish_state(true);
+  }
+  if (global_motion_sensor_) global_motion_sensor_->publish_state(motion);
+  for (auto *zone : zones_) {
+    if (!zone->active || zone->id >= 32) continue;
+    zone->publish_people_count(hits[zone->id]);
+    if (hits[zone->id]) {
+      zone_derived_seen_[zone->id] = true;
+      zone_derived_last_seen_[zone->id] = now;
+      zone->publish_presence(true);
+    }
+    if (moving[zone->id]) zone->note_motion_event(now);
+  }
+  return valid;
+}
+
+void FP2Component::expire_derived_states_() {
+  if (!derive_presence_ || desired_work_mode_ != 3) return;
+  const uint32_t now = millis();
+  if (!derived_seen_ || now - derived_last_seen_ >= absence_timeout_ms_) {
+    if (global_presence_sensor_ && (!global_presence_sensor_->has_state() || global_presence_sensor_->state)) global_presence_sensor_->publish_state(false);
+    if (global_motion_sensor_ && (!global_motion_sensor_->has_state() || global_motion_sensor_->state)) global_motion_sensor_->publish_state(false);
+  }
+  for (auto *zone : zones_) {
+    if (!zone->active || zone->id >= 32) continue;
+    if (!zone_derived_seen_[zone->id] || now - zone_derived_last_seen_[zone->id] >= absence_timeout_ms_) {
+      if (zone->presence_sensor && (!zone->presence_sensor->has_state() || zone->presence_sensor->state)) zone->publish_presence(false);
+      if (zone->motion_active) zone->reset_motion();
+      if (zone->people_count_sensor && (!zone->people_count_sensor->has_state() || zone->people_count_sensor->state != 0)) zone->publish_people_count(0);
+    }
+  }
 }
 
 void FP2Component::check_initialization_() {
   if (init_done_)
     return;
 
-  // We rely on handle_parsed_frame_ to set a flag or we check
-  // last_heartbeat_millis_
-  if (last_heartbeat_millis_ > 0) {
-    ESP_LOGI(TAG, "Heartbeat received. Starting initialization sequence...");
+  if (last_radar_frame_millis_ > 0) {
+    ESP_LOGI(TAG, "Radar traffic received. Starting initialization sequence...");
     init_done_ = true;
+    initialization_millis_ = millis();
 
     // 1. Basic Settings
+    enqueue_command_(OpCode::WRITE, AttrId::WORK_MODE, (uint8_t) 3);
+    enqueue_command_(OpCode::WRITE, AttrId::MOTION_DETECT, (uint8_t) 1);
+    enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT, (uint8_t) 1);
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, location_reporting_active_);
+    if (location_reporting_active_) {
+      if (location_report_switch_ != nullptr) {
+        location_report_switch_->publish_state(true);
+      }
+    }
     enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
     enqueue_command_(OpCode::WRITE, AttrId::LEFT_RIGHT_REVERSE,
                      (uint8_t)(left_right_reverse_ ? 2 : 0));
-    enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, global_presence_sensitivity_);
+    // RUN-04 (09-03): resolve the Global Zone's effective sensitivity from a
+    // saved NVS override, if present, BEFORE the write below - falls back to
+    // the compiled default when no override exists.
+    uint8_t effective_global_sensitivity = global_presence_sensitivity_;
+    FP2GlobalZoneOverride gov;
+    if (load_global_zone_override_(&gov)) {
+      ESP_LOGI(TAG, "Global Zone: applying saved NVS override (presence_sensitivity=%u) "
+                    "instead of compiled default (%u)",
+               gov.presence_sensitivity, global_presence_sensitivity_);
+      effective_global_sensitivity = gov.presence_sensitivity;
+    }
+    enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, effective_global_sensitivity);
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
-    // enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
-    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
+    // PROTO-03 (2026-07-14): 0x0121 is report-only (fall event, not a
+    // boolean enable) as of this fix — there is no separate fall-detection
+    // enable register anywhere in the protocol. The old boot-time boolean
+    // WRITE of AttrId::FALL_DETECTION has been removed. Fall events only
+    // fire while the radar is in WORK_MODE=8; switch into it via the
+    // already-shipped fp2_set_work_mode(8) diagnostic action.
+    if (has_fall_detection_enabled_ && fall_detection_enabled_) {
+      ESP_LOGW(TAG, "fall_detection: true has no boot-time write effect as of this fix — "
+                    "0x0121 is fall-event-report-only. Fall events require WORK_MODE=8; "
+                    "switch via the fp2_set_work_mode(8) diagnostic action.");
+    }
+    if (has_fall_detection_sensitivity_) {
+      enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
+    }
+    if (has_sleep_report_enable_) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep_report_enable_);
+    }
+    if (has_posture_report_enable_) {
+      enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, posture_report_enable_);
+    }
+    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, people_counting_report_enable_);
+    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, people_number_enable_);
+    enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, target_type_enable_);
     // enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) 0); // sleep zone mount pos
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
-    enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
-    enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE, (uint8_t) 0); // walking distance enable
-    enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
-    enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
+    enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t)(dwell_time_enable_ ? 1 : 0));
+    enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE, (uint8_t)(walking_distance_enable_ ? 1 : 0));
+    enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, thermodynamic_chart_enable_);
+    if (thermodynamic_chart_enable_) {
+      enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
+    }
 
     // 2. Grids
     if (has_interference_grid_) {
@@ -132,17 +1555,52 @@ void FP2Component::check_initialization_() {
     // 3. Zones
     std::vector<uint8_t> activations(32, 0);
     for (const auto &zone : zones_) {
+      // CR-01 fix (12-REVIEW iter2): skip inactive (runtime-removed) zones -
+      // possible in the rare case a remove happened before the very first
+      // radar frame arrived (this whole block only ever runs once, gated by
+      // init_done_). zones_ never erases a removed zone anymore.
+      if (!zone->active)
+        continue;
+      // RUN-02 (09-03): resolve grid/sensitivity/zone_type into LOCAL
+      // variables from a saved NVS override, if present, BEFORE building any
+      // of this zone's register payloads below (09-RESEARCH.md Pitfall 4 -
+      // the override must win before the first enqueue, not as a follow-up
+      // correction, or the radar gets a redundant second ZONE_MAP write).
+      // Falls back to the compiled defaults when no override exists.
+      GridMap grid = zone->grid;
+      uint8_t sensitivity = zone->sensitivity;
+      int zone_type = zone->has_zone_type ? (int) zone->zone_type : -1;
+
+      FP2ZoneOverride ov;
+      if (load_zone_override_(zone->id, &ov)) {
+        ESP_LOGI(TAG, "Zone %u: applying saved NVS override instead of compiled default",
+                 zone->id);
+        grid = ov.grid;
+        sensitivity = ov.sensitivity;
+        zone_type = ov.zone_type;
+        zone->grid = grid;
+        zone->sensitivity = sensitivity;
+        zone->has_zone_type = zone_type >= 0;
+        if (zone_type >= 0) zone->set_zone_type(zone_type);
+      }
+
       // a. Send Zone Detect Setting (0x0114)
       // Structure: [ZoneID] [40 byte Map]
       std::vector<uint8_t> payload;
       payload.push_back(zone->id);
-      payload.insert(payload.end(), zone->grid.begin(), zone->grid.end());
+      payload.insert(payload.end(), grid.begin(), grid.end());
       enqueue_command_blob2_(AttrId::ZONE_MAP, payload);
 
       // b. Send Sensitivity (0x0151)
       // Structure: UINT16 (High=ID, Low=Sens)
-      uint16_t sens_val = (zone->id << 8) | (zone->sensitivity & 0xFF);
+      uint16_t sens_val = (zone->id << 8) | (sensitivity & 0xFF);
       enqueue_command_(OpCode::WRITE, AttrId::ZONE_SENSITIVITY, sens_val);
+
+      // c. Send Zone Type (0x0152) if resolved: UINT16 (High=ID, Low=Type)
+      if (zone_type >= 0) {
+        uint16_t type_val = (zone->id << 8) | ((uint8_t) zone_type & 0xFF);
+        enqueue_command_(OpCode::WRITE, AttrId::DETECT_ZONE_TYPE, type_val);
+      }
 
       activations[zone->id] = zone->id;
     }
@@ -150,15 +1608,29 @@ void FP2Component::check_initialization_() {
     enqueue_command_blob2_(AttrId::ZONE_ACTIVATION_LIST, activations);
 
     for (const auto &zone : zones_) {
+        // CR-01 fix (12-REVIEW iter2): skip inactive (runtime-removed) zones -
+        // see the identical guard on the activation-list loop above.
+        if (!zone->active)
+          continue;
         // Close/Away Enable default?
         // Trace: 0x0153 Zone Close Away Enable.
         // We can enable it by default for now or add config options later.
         enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t)((zone->id << 8) | 1));
     }
 
-    // enqueue_read_((AttrId) 0x302); // Read radar flash ID attribute
-    // enqueue_read_((AttrId) 0x303); // Read radar ID attribute
-    // enqueue_read_((AttrId) 0x305); // Read radar calibration result attribute
+    if (debug_probe_reads_) {
+      ESP_LOGI(TAG, "Queueing radar debug probe reads");
+      enqueue_read_(AttrId::MOTION_DETECT);
+      enqueue_read_(AttrId::PRESENCE_DETECT);
+      enqueue_read_(AttrId::LOCATION_REPORT_ENABLE);
+      enqueue_read_(AttrId::RADAR_HW_VERSION);
+      enqueue_read_(AttrId::RADAR_FLASH_ID);
+      enqueue_read_(AttrId::RADAR_ID);
+      enqueue_read_(AttrId::RADAR_CALIBRATION_RESULT);
+    }
+
+    if (desired_work_mode_ == 9) configure_sleep_mode(sleep_width_, sleep_length_, sleep_mount_);
+    else if (desired_work_mode_ != 3) enqueue_command_(OpCode::WRITE, AttrId::WORK_MODE, desired_work_mode_);
 
     // 5. Publish grid sensors once initialization completes
     ESP_LOGI(TAG, "Publishing grid sensors: has_edge=%d edge_sensor=%p has_exit=%d exit_sensor=%p has_interference=%d interference_sensor=%p",
@@ -186,7 +1658,11 @@ void FP2Component::check_initialization_() {
     }
 
     // 6. Publish zone map sensors
+    // CR-01 fix (12-REVIEW iter2): skip inactive (runtime-removed) zones -
+    // see the identical guard above.
     for (const auto &zone : zones_) {
+      if (!zone->active)
+        continue;
       if (zone->map_sensor != nullptr) {
         zone->map_sensor->publish_state(grid_to_hex_card_format(zone->grid));
       }
@@ -196,8 +1672,10 @@ void FP2Component::check_initialization_() {
     // After radar reset, we know there is no occupancy/motion detected yet
     ESP_LOGI(TAG, "Publishing initial zone states (no presence/motion after reset)");
     for (const auto &zone : zones_) {
+      if (!zone->active)
+        continue;
       zone->publish_presence(false);
-      zone->publish_motion(false);
+      zone->reset_motion();
     }
 
     if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
@@ -213,9 +1691,6 @@ void FP2Component::check_initialization_() {
 void FP2Component::process_command_queue_() {
   uint32_t now = millis();
 
-  ESP_LOGV(TAG, "cmdq: size=%u waiting_ack=0x%04X", (unsigned) command_queue_.size(),
-           (uint16_t) waiting_for_ack_attr_id_);
-
   // If waiting for ACK
   if (waiting_for_ack_attr_id_ != AttrId::INVALID) {
     if (now - last_command_sent_millis_ > ACK_TIMEOUT_MS) {
@@ -226,11 +1701,20 @@ void FP2Component::process_command_queue_() {
         if (cmd.retry_count >= MAX_RETRIES) {
           ESP_LOGW(TAG, "Command 0x%04X timed out after %d retries. Dropping.",
                    (uint16_t) cmd.attr_id, MAX_RETRIES);
+          publish_radar_debug_("command_ack_failed", cmd.attr_id, cmd.data);
+          // RUN-04 (09-01): one failed register fails the whole save batch.
+          if (!pending_save_attr_ids_.empty()) {
+            save_failed_ = true;
+            save_error_ = std::string("timed out writing ") + attr_id_to_string_(cmd.attr_id);
+            pending_save_attr_ids_.clear();
+            save_batch_in_progress_ = false;
+          }
           command_queue_.pop_front();
           waiting_for_ack_attr_id_ = AttrId::INVALID;
         } else {
           ESP_LOGW(TAG, "Command 0x%04X timed out. Retrying (%d/%d)...",
                    (uint16_t) cmd.attr_id, cmd.retry_count, MAX_RETRIES);
+          publish_radar_debug_("command_retry", cmd.attr_id, cmd.data);
           // Resend handled by send_next_command_ logic once waiting state calls
           // reset? Actually, we should just resend immediately
           send_next_command_();
@@ -249,50 +1733,52 @@ void FP2Component::process_command_queue_() {
   }
 }
 
+void FP2Component::write_command_frame_(FP2Command &cmd, bool track_timeout) {
+  static uint8_t next_tx_seq = 0;
+  if (cmd.sequence < 0) cmd.sequence = next_tx_seq++;
+  auto frame = encode_fp2_frame(static_cast<uint8_t>(cmd.type), cmd.sequence, cmd.data);
+
+  write_array(frame);
+  telnet_mirror_(frame.data(), frame.size());  // DIAG-02 (08-04): TX mirror, full encoded frame
+  if (debug_mode_) {
+    ESP_LOGD(TAG, "[debug_mode] TX frame: %s", format_payload_hex_(frame, frame.size()).c_str());
+  }
+  if (track_timeout) {
+    last_command_sent_millis_ = millis();
+    publish_radar_debug_(cmd.type == OpCode::RESPONSE ? "command_tx_read" : "command_tx_write",
+                         cmd.attr_id, cmd.data);
+  }
+  ESP_LOGD(TAG, "Sending %s %s (0x%04X), len=%u data=%s",
+           op_code_to_string_((uint8_t) cmd.type), attr_id_to_string_(cmd.attr_id),
+           (uint16_t) cmd.attr_id, static_cast<unsigned>(cmd.data.size()),
+           format_payload_hex_(cmd.data, 64).c_str());
+}
+
+// DIAG-02 (08-04): best-effort, non-blocking mirror of raw TX/RX bytes to the
+// connected telnet client. Drop-on-backpressure - never block loop() on a
+// telnet write (T-08-08). A hard write error resets the client so the next
+// accept() cycle can pick up a new connection.
+void FP2Component::telnet_mirror_(const uint8_t *data, size_t len) {
+  if (!telnet_client_)
+    return;
+  ssize_t n = telnet_client_->write(data, len);
+  if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+    ESP_LOGI(TAG, "telnet: client disconnected");
+    telnet_client_.reset();
+  }
+}
+
 void FP2Component::send_next_command_() {
   if (command_queue_.empty())
     return;
 
   auto &cmd = command_queue_.front();
-  static uint8_t next_tx_seq = 0;
+  write_command_frame_(cmd, cmd.type == OpCode::WRITE || cmd.type == OpCode::RESPONSE);
 
-  ESP_LOGV(TAG, "TX: op=0x%02X attr=0x%04X payload_len=%u", (unsigned) cmd.type, (uint16_t) cmd.attr_id,
-           (unsigned) cmd.data.size());
-
-  // Build frame: [Sync][Ver][Ver][Seq][Op][Len][Len][Check][Payload][CRC][CRC]
-  std::vector<uint8_t> frame;
-  frame.push_back(0x55);  // Sync
-  frame.push_back(0x00);  // Version High
-  frame.push_back(0x01);  // Version Low
-  frame.push_back(next_tx_seq++);
-  frame.push_back((uint8_t)cmd.type);
-
-  uint16_t len = cmd.data.size();
-  frame.push_back((len >> 8) & 0xFF);
-  frame.push_back(len & 0xFF);
-
-  // Header checksum: NOT((Sum(bytes 0-6) - 1))
-  uint8_t sum = 0;
-  for (int i = 0; i < 7; i++)
-    sum += frame[i];
-  frame.push_back((uint8_t)(~((sum - 1))));
-
-  // Append payload
-  frame.insert(frame.end(), cmd.data.begin(), cmd.data.end());
-
-  // Append CRC16 (Little Endian)
-  uint16_t crc = crc16(frame.data(), frame.size());
-  frame.push_back(crc & 0xFF);
-  frame.push_back((crc >> 8) & 0xFF);
-
-  ESP_LOGV(TAG, "TX: seq=%u len=%u hchk=0x%02X crc=0x%04X", (unsigned) frame[3], (unsigned) len,
-           (unsigned) frame[7], (unsigned) crc);
-
-  write_array(frame);
-  last_command_sent_millis_ = millis();
-
-  // Only WRITE commands expect an ACK from the radar
-  // ACK and Reverse Read Response packets don't get ACKed
+  // WRITE commands expect ACK. Host-initiated reads (OpCode::RESPONSE, wire
+  // 0x01) are fire-and-forget per PROTO-01 — the radar's answer, if any,
+  // arrives asynchronously as its own RESPONSE frame and is purely
+  // observational (see handle_response_); it does not gate this queue.
   if (cmd.type == OpCode::WRITE) {
     waiting_for_ack_attr_id_ = cmd.attr_id;
   } else {
@@ -302,6 +1788,7 @@ void FP2Component::send_next_command_() {
 
 void FP2Component::send_ack_(AttrId attr_id) {
   FP2Command cmd;
+  cmd.sequence = rx_seq_;
   cmd.type = OpCode::ACK;
   cmd.attr_id = attr_id;
   cmd.retry_count = 0;
@@ -312,14 +1799,13 @@ void FP2Component::send_ack_(AttrId attr_id) {
   cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
   cmd.data.push_back(0x03);  // DataType: VOID
 
-  // ACKs are high priority - push to front of queue
-  command_queue_.push_front(cmd);
-
-  ESP_LOGV(TAG, "Enqueued ACK for 0x%04X (cmdq size=%u)", (uint16_t) attr_id, (unsigned) command_queue_.size());
+  // Report ACKs must not disturb the write/ACK retry queue.
+  write_command_frame_(cmd, false);
 }
 
 void FP2Component::send_reverse_response_(AttrId attr_id, uint8_t byte_val) {
   FP2Command cmd;
+  cmd.sequence = rx_seq_;
   cmd.type = OpCode::READ;  // Reverse Read Response uses READ opcode
   cmd.attr_id = attr_id;
   cmd.retry_count = 0;
@@ -330,9 +1816,17 @@ void FP2Component::send_reverse_response_(AttrId attr_id, uint8_t byte_val) {
   cmd.data.push_back(0x00);  // DataType: UINT8
   cmd.data.push_back(byte_val);
 
-  command_queue_.push_back(cmd);
+  // The radar is synchronously waiting for this reverse-read response.
+  write_command_frame_(cmd, false);
+}
 
-  ESP_LOGV(TAG, "Enqueued reverse response: attr=0x%04X val=%u", (uint16_t) attr_id, (unsigned) byte_val);
+void FP2Component::send_reverse_response_(AttrId attr_id, uint16_t word_val) {
+  FP2Command cmd;
+  cmd.type = OpCode::READ;
+  cmd.attr_id = attr_id;
+  cmd.sequence = rx_seq_;
+  cmd.data = {uint8_t(uint16_t(attr_id) >> 8), uint8_t(attr_id), 0x01, uint8_t(word_val >> 8), uint8_t(word_val)};
+  write_command_frame_(cmd, false);
 }
 
 void FP2Component::handle_incoming_byte_(uint8_t byte) {
@@ -341,7 +1835,6 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
       state_ = VER_H;
       rx_payload_.clear();
       header_sum_ = byte; // Start sum
-      ESP_LOGV(TAG, "RX: sync");
     }
     return;
   }
@@ -378,12 +1871,9 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
   case H_CHECK: {
     uint8_t expected = (uint8_t)(~((header_sum_ - 1)));
     if (byte != expected) {
-      ESP_LOGW(TAG, "Header Checksum Fail: Exp %02X, Got %02X (seq=%u op=0x%02X len=%u)", expected, byte,
-               (unsigned) rx_seq_, (unsigned) rx_opcode_, (unsigned) rx_len_);
+      ESP_LOGW(TAG, "Header Checksum Fail: Exp %02X, Got %02X", expected, byte);
       state_ = SYNC;
     } else {
-      ESP_LOGV(TAG, "RX: header ok (seq=%u op=0x%02X len=%u)", (unsigned) rx_seq_, (unsigned) rx_opcode_,
-               (unsigned) rx_len_);
       if (rx_len_ > 4096) { // Sanity check, increased for potential BLOBs
         state_ = SYNC;
       } else if (rx_len_ == 0) {
@@ -421,17 +1911,13 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
     frame.push_back((uint8_t)(~((header_sum_ - 1))));
     frame.insert(frame.end(), rx_payload_.begin(), rx_payload_.end());
 
-    uint16_t calc = crc16(frame.data(), frame.size());
+    uint16_t calc = fp2_crc16(frame.data(), frame.size());
     if (calc == rx_crc_) {
-      ESP_LOGV(TAG, "RX: crc ok (seq=%u op=0x%02X len=%u crc=0x%04X)", (unsigned) rx_seq_,
-               (unsigned) rx_opcode_, (unsigned) rx_len_, (unsigned) rx_crc_);
       // Parse Payload
       // Note: rx_len_ >= 2 to allow Reverse Read Requests (RESPONSE with just SubID, no data)
       if (rx_len_ >= 2) {
         uint16_t attr_id_int = (rx_payload_[0] << 8) | rx_payload_[1];
         AttrId attr_id = (AttrId) attr_id_int;
-        ESP_LOGV(TAG, "RX: frame op=0x%02X attr=0x%04X payload=%u", (unsigned) rx_opcode_, (uint16_t) attr_id,
-                 (unsigned) rx_payload_.size());
         // DataType = rx_payload_[2] (if present)
         handle_parsed_frame_(rx_opcode_, attr_id, rx_payload_);
       }
@@ -450,8 +1936,16 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
 void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
                                         const std::vector<uint8_t> &payload) {
   OpCode op = (OpCode)type;
-  ESP_LOGV(TAG, "Parsed: op=0x%02X attr=0x%04X bytes=%u", (unsigned) type, (uint16_t) attr_id,
-           (unsigned) payload.size());
+  last_radar_frame_millis_ = millis();
+  ESP_LOGV(TAG, "Received %s %s (0x%04X), len=%u",
+           op_code_to_string_(type), attr_id_to_string_(attr_id),
+           (uint16_t) attr_id, static_cast<unsigned>(payload.size()));
+  if (debug_mode_) {
+    ESP_LOGD(TAG, "[debug_mode] RX op=%s attr=0x%04X len=%u data=%s",
+             op_code_to_string_(type), (uint16_t) attr_id,
+             static_cast<unsigned>(payload.size()),
+             format_payload_hex_(payload, payload.size()).c_str());
+  }
 
   switch (op) {
     case OpCode::ACK:
@@ -463,29 +1957,49 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
     case OpCode::RESPONSE:
       handle_response_(attr_id, payload);
       break;
+    case OpCode::READ:
+      if (payload.size() > 2) {
+        handle_response_(attr_id, payload);
+      } else {
+        publish_radar_debug_("unexpected_read_opcode", attr_id, payload);
+        ESP_LOGW(TAG, "Unexpected READ opcode from radar for 0x%04X (%s)",
+                 (uint16_t) attr_id, attr_id_to_string_(attr_id));
+      }
+      break;
     default:
+      publish_radar_debug_("unhandled_opcode", attr_id, payload);
       ESP_LOGW(TAG, "Unhandled OpCode: %d", type);
       break;
   }
 }
 
 void FP2Component::handle_ack_(AttrId attr_id) {
-  ESP_LOGV(TAG, "RX: ACK attr=0x%04X (waiting=0x%04X)", (uint16_t) attr_id, (uint16_t) waiting_for_ack_attr_id_);
-  if (waiting_for_ack_attr_id_ == attr_id) {
+  if (waiting_for_ack_attr_id_ == attr_id && !command_queue_.empty() &&
+      command_queue_.front().sequence == rx_seq_) {
     ESP_LOGD(TAG, "ACK Received for 0x%04X", (uint16_t) attr_id);
+    publish_radar_debug_("command_ack", attr_id, std::vector<uint8_t>{});
     waiting_for_ack_attr_id_ = AttrId::INVALID;
     if (!command_queue_.empty()) {
+      if (command_queue_.front().save_generation == save_generation_) {
+        auto it = std::find(pending_save_attr_ids_.begin(), pending_save_attr_ids_.end(), attr_id);
+        if (it != pending_save_attr_ids_.end()) pending_save_attr_ids_.erase(it);
+      }
       command_queue_.pop_front();
     }
+    // CR-01 fix (12-REVIEW #2): the batch drained to empty with every write
+    // ACKed - close it so save_pending()/save_error() are safe for the httpd
+    // task to read (save_failed_ is still false on this success path).
+    if (pending_save_attr_ids_.empty()) {
+      save_batch_in_progress_ = false;
+    }
   } else {
-    ESP_LOGW(TAG, "Unexpected ACK 0x%04X (Waiting for 0x%04X)", attr_id,
+    ESP_LOGW(TAG, "Unexpected ACK 0x%04X (Waiting for 0x%04X)", (uint16_t) attr_id,
              (uint16_t) waiting_for_ack_attr_id_);
+    publish_radar_debug_("unexpected_ack", attr_id, std::vector<uint8_t>{});
   }
 }
 
 void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  ESP_LOGV(TAG, "RX: REPORT attr=0x%04X bytes=%u dtype=0x%02X", (uint16_t) attr_id, (unsigned) payload.size(),
-           payload.size() >= 3 ? (unsigned) payload[2] : 0xFF);
   // Send ACK for all reports except heartbeat
   if (attr_id != AttrId::RADAR_SW_VERSION) {
     send_ack_(attr_id);
@@ -495,6 +2009,13 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
       last_heartbeat_millis_ = millis();
+      // PROTO-02: keep the radar's sleep state machine alive during extended
+      // sleep/vitals sessions by piggybacking an incrementing 0x0203 write on
+      // every heartbeat report while sleep mode is active.
+      if (sleep_mode_active_ && init_done_) {
+        enqueue_command_(OpCode::WRITE, AttrId::SLEEP_HEARTBEAT_SYNC,
+                         (uint8_t) sleep_heartbeat_counter_++);
+      }
       if (payload.size() == 4 && payload[2] == 0x00) {
         auto ver_str = std::to_string(payload[3]);
         if (radar_software_sensor_ != nullptr) {
@@ -504,56 +2025,87 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         }
         break;
       }
+      // Malformed heartbeat: stop here instead of falling through to WORK_MODE.
+      break;
 
     case AttrId::WORK_MODE:
         if (payload.size() == 4 && payload[2] == 0x00) {
+            if (init_done_ && millis() - initialization_millis_ > 5000) radar_reboot_pending_ = true;
             ESP_LOGI(TAG, "Received work mode report: %u", payload[3]);
+            publish_radar_debug_("radar_report", attr_id, payload);
             break;
         }
+        break;
 
     case AttrId::DETECT_ZONE_MOTION:
+        if (derive_presence_ && desired_work_mode_ == 3) break;
         if (payload.size() == 5 && payload[2] == 0x01) {
             uint8_t zone_id = payload[3];
-            uint8_t state = payload[4];
-            ESP_LOGD(TAG, "Zone Motion Report: Zone %u = %u", zone_id, state);
+            uint8_t event_type = payload[4];
+            ESP_LOGD(TAG, "Zone Motion Report: Zone %u = 0x%02X", zone_id, event_type);
 
-            //for (auto &z : zones_) {
-            //  if (z->id == zone_id) {
-            //    z->publish_motion(state == 1);
-            //    break;
-            //  }
-            //}
+            // Low byte is an event-type bitmask (PROTOCOL 0x0115):
+            // 1=Enter, 2=Move, 4=Exit, 8=L/R, 16=Interference.
+            // Enter/Move/L-R count as movement and refresh the debounce timer;
+            // Exit/Interference do not.
+            if (event_type & 0x0B) {
+              uint32_t now = millis();
+              // WR-01 fix (12-REVIEW): require z->active so a stray report
+              // for a removed zone (ACK-pending window) never mutates a
+              // retired FP2Zone's motion state.
+              for (auto &z : zones_) {
+                if (z->active && z->id == zone_id) {
+                  z->note_motion_event(now);
+                  break;
+                }
+              }
+            }
             break;
         }
+        break;
 
     case AttrId::MOTION_DETECT:
+        if (derive_presence_ && desired_work_mode_ == 3) break;
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            global_motion_sensor_->publish_state(state == 0);
+            if (global_motion_sensor_ != nullptr) {
+              global_motion_sensor_->publish_state(state != 0);
+            }
             ESP_LOGI(TAG, "Received global motion report: %u", state);
             break;
         }
+        break;
 
     case AttrId::PRESENCE_DETECT:
+        if (derive_presence_ && desired_work_mode_ == 3) break;
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            global_presence_sensor_->publish_state(state != 0);
+            if (global_presence_sensor_ != nullptr) {
+              global_presence_sensor_->publish_state(state != 0);
+            }
             ESP_LOGI(TAG, "Received global presence report: %u", state);
             break;
         }
         break;
 
+    case AttrId::REALTIME_PEOPLE_NUMBER:
+      handle_simple_uint32_report_(payload, realtime_people_number_sensor_, "realtime_people_number");
+      break;
+
     case AttrId::ONTIME_PEOPLE_NUMBER:
-        if (payload.size() == 7 && payload[2]  == 0x02) {
-            uint32_t count = ((uint32_t) payload[3]) << 24
-                | ((uint32_t) payload[4]) << 16
-                | ((uint32_t) payload[5]) << 8
-                | ((uint32_t) payload[6]);
-            ESP_LOGI(TAG, "Received ontime people number report: %u", count);
-        }
-        break;
+      handle_simple_uint32_report_(payload, ontime_people_number_sensor_, "ontime_people_number");
+      break;
+
+    case AttrId::REALTIME_PEOPLE_COUNTING:
+      handle_simple_uint32_report_(payload, realtime_people_counting_sensor_, "realtime_people_counting");
+      break;
+
+    case AttrId::WALK_DISTANCE_ALL:
+      handle_simple_uint32_report_(payload, walking_distance_sensor_, "walking_distance_all");
+      break;
 
     case AttrId::ZONE_PRESENCE:  // Zone Presence
+        if (derive_presence_ && desired_work_mode_ == 3) break;
         // Payload: [SubID 2B] [Type 0x01(UINT16)] [ValH] [ValL]
         // ValH = ZoneID, ValL = State (1=Occ, 0=Empty)
         if (payload.size() >= 5 && payload[2] == 0x01) {
@@ -561,14 +2113,48 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             uint8_t state = payload[4];
             ESP_LOGD(TAG, "Zone Presence Report: Zone %d = %s", zone_id, state ? "ON" : "OFF");
 
+            // WR-01 fix (12-REVIEW): require z->active so a stray report for
+            // a removed zone (ACK-pending window) never mutates a retired
+            // FP2Zone's presence state.
             for (auto &z : zones_) {
-                if (z->id == zone_id) {
+                if (z->active && z->id == zone_id) {
                     z->publish_presence(state == 1);
                     break;
                 }
             }
             break;
         }
+        // WR-04 fix (12-REVIEW): explicit break on the malformed-payload path
+        // so execution never falls through into ZONE_PEOPLE_NUMBER's case
+        // body below (attr_id is still ZONE_PRESENCE here, so the fallthrough
+        // would re-evaluate the same failing guard and mislabel a malformed
+        // ZONE_PRESENCE report as "zone_people_number_malformed" in the
+        // debug sensor/log).
+        publish_radar_debug_("zone_presence_malformed", attr_id, payload);
+        break;
+
+    case AttrId::ZONE_PEOPLE_NUMBER:  // Zone People Count (SENSE-01, 08-01)
+        if (derive_presence_ && desired_work_mode_ == 3) break;
+        // Payload: [SubID 2B] [Type 0x01(UINT16)] [ValH] [ValL]
+        // ValH = ZoneID, ValL = Count
+        if (payload.size() >= 5 && payload[2] == 0x01) {
+            uint8_t zone_id = payload[3];
+            uint8_t count = payload[4];
+            ESP_LOGD(TAG, "Zone People Count Report: Zone %d = %u", zone_id, count);
+
+            // WR-01 fix (12-REVIEW): require z->active so a stray report for
+            // a removed zone (ACK-pending window) never mutates a retired
+            // FP2Zone's people-count state.
+            for (auto &z : zones_) {
+                if (z->active && z->id == zone_id) {
+                    z->publish_people_count(count);
+                    break;
+                }
+            }
+            break;
+        }
+        publish_radar_debug_("zone_people_number_malformed", attr_id, payload);
+        break;
 
     case AttrId::LOCATION_TRACKING_DATA:  // Location Tracking Data
       handle_location_tracking_report_(payload);
@@ -578,9 +2164,71 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       handle_temperature_report_(payload);
       break;
 
+    case AttrId::DEBUG_LOG:
+      handle_debug_log_report_(payload);
+      break;
+
+    case AttrId::TARGET_POSTURE:
+      handle_target_posture_report_(payload);
+      break;
+
+    case AttrId::PEOPLE_COUNTING:
+      handle_people_counting_report_(payload);
+      break;
+
+    case AttrId::THERMO_DATA:
+      publish_radar_debug_("radar_report", attr_id, payload);
+      break;
+
+    case AttrId::SLEEP_DATA:
+      handle_sleep_data_report_(payload);
+      break;
+
+    case AttrId::SLEEP_STATE:
+      handle_sleep_state_report_(payload);
+      break;
+
+    case AttrId::SLEEP_PRESENCE:
+      handle_simple_uint8_binary_report_(payload, sleep_presence_sensor_, "sleep_presence");
+      break;
+
+    case AttrId::SLEEP_INOUT_STATE:
+      handle_simple_uint8_binary_report_(payload, sleep_inout_sensor_, "sleep_inout_state");
+      break;
+
+    case AttrId::FALL_DETECTION_RESULT:
+      // Treats the 3-state event (0=clear/1=type A/2=type B) as boolean
+      // (!=0) for the HA entity, matching the reference fork's own choice.
+      // The raw payload is still visible via the ESP_LOGV frame-receipt log
+      // in handle_parsed_frame_() and the malformed-report radar_debug path
+      // inside handle_simple_uint8_binary_report_(), so no information is
+      // silently dropped.
+      handle_simple_uint8_binary_report_(payload, fall_detected_sensor_, "fall_detection_result");
+      break;
+
+    case AttrId::FALL_OVERTIME_REPORT:
+      // SENSE-02 (08-02): distinct async report SubID, not the 0x0134/0x0135
+      // config attributes. KNOWN RISK: an independent fork's reverse
+      // engineering characterizes this SubID's stock-firmware handler as a
+      // 3-byte no-data stub (likely inert). The reused helper below already
+      // bounds-checks (payload.size() != 4) and routes a malformed/short
+      // payload to publish_radar_debug_ safely, without crashing, which is
+      // the correct behavior whether or not this SubID ever carries real data.
+      handle_simple_uint8_binary_report_(payload, fall_overtime_sensor_, "fall_overtime_report");
+      break;
+
+    case AttrId::SLEEP_EVENT:
+      handle_sleep_event_report_(payload);
+      break;
+
+    case AttrId::RESET_ABSENT_STATUS:
+      publish_radar_debug_("radar_report", attr_id, payload);
+      ESP_LOGI(TAG, "Received reset_absent_status report");
+      break;
+
     default:
-      // Unknown report type - already logged in main handler
-      ESP_LOGW(TAG, "Unhandled report 0x%04X", (uint16_t) attr_id);
+      publish_radar_debug_("unhandled_report", attr_id, payload);
+      ESP_LOGW(TAG, "Unhandled report 0x%04X (%s)", (uint16_t) attr_id, attr_id_to_string_(attr_id));
       break;
   }
 }
@@ -591,29 +2239,46 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
     return;
   }
 
-  // Payload: [SubID 2] [Type 0x06(BLOB2)] [Len 2] [Count 1] [Target 14]...
-  if (payload.size() < 6 || payload[2] != 0x06) {
+  LocationTargets targets;
+  if (!parse_location_targets(payload, &targets)) {
+    ESP_LOGW(TAG, "Rejected malformed location target BLOB (payload_len=%u)",
+             static_cast<unsigned>(payload.size()));
+    publish_radar_debug_("location_tracking_malformed", AttrId::LOCATION_TRACKING_DATA, payload);
     return;
   }
 
-  uint8_t count = payload[5];
-  ESP_LOGV(TAG, "Location tracking report: count=%u bytes=%u", (unsigned) count, (unsigned) payload.size());
+  const uint8_t count = targets.count;
+  uint32_t now = millis();
+  if (count != last_location_target_count_ || now - last_location_debug_millis_ > 5000) {
+    ESP_LOGD(TAG, "Location tracking report: targets=%u payload_len=%u",
+             count, static_cast<unsigned>(payload.size()));
+    last_location_target_count_ = count;
+    last_location_debug_millis_ = now;
+  }
 
   // Build binary buffer: [count][target1 14 bytes][target2 14 bytes]...
   // Each target is 14 bytes: id(1), x(2), y(2), z(2), velocity(2), snr(2), classifier(1), posture(1), active(1)
-  std::vector<uint8_t> binary_data;
-  binary_data.push_back(count);
+  const std::vector<uint8_t> &binary_data = targets.blob;
+
+  // Corner-mount coordinate scale (PROTOCOL 5.1): X/Y raw span 800 units = 7 m.
+  static constexpr float METERS_PER_UNIT = 7.0f / 800.0f;
+  float nearest = NAN;
+  uint8_t valid = 0;
 
   for (int i = 0; i < count; i++) {
-    int offset = 6 + (i * 14);
-    if (offset + 14 > payload.size())
-      break;
+    const size_t offset = 1 + static_cast<size_t>(i) * LOCATION_TARGET_BYTES;
 
-    // Copy raw 14-byte target data directly (already in correct big-endian format)
-    binary_data.insert(binary_data.end(),
-                       payload.begin() + offset,
-                       payload.begin() + offset + 14);
+    // Target layout: id(1), X s16(2), Y s16(2), ... (big endian)
+    int16_t x = (int16_t)((binary_data[offset + 1] << 8) | binary_data[offset + 2]);
+    int16_t y = (int16_t)((binary_data[offset + 3] << 8) | binary_data[offset + 4]);
+    float scale = (mounting_position_ == 2 || mounting_position_ == 3) ? METERS_PER_UNIT : 0.5f / wall_units_per_cell_;
+    float dist_m = sqrtf((float) x * x + (float) y * y) * scale;
+    if (std::isnan(nearest) || dist_m < nearest)
+      nearest = dist_m;
+    valid++;
   }
+
+  if (derive_presence_ && desired_work_mode_ == 3) valid = update_derived_states_(binary_data, count);
 
   // Base64 encode the binary data
   std::string base64_str = esphome::base64_encode(binary_data);
@@ -621,11 +2286,29 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   if (this->target_tracking_sensor_ != nullptr) {
     this->target_tracking_sensor_->publish_state(base64_str);
   }
+
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  if (this->zone_editor_sse_ != nullptr) {
+    this->zone_editor_sse_->try_send_nodefer(base64_str.c_str(), base64_str.size(), "target_update");
+  }
+#endif
+
+  // Publish count immediately on every edge. A short-lived second target must
+  // not disappear merely because it arrived between one-second samples.
+  if (target_count_sensor_ != nullptr &&
+      target_count_changed(valid, &last_published_target_count_)) {
+    target_count_sensor_->publish_state(valid);
+  }
+
+  // Distance is telemetry only and remains throttled to ~1 Hz because the raw
+  // location stream normally arrives at 10-20 Hz.
+  if (nearest_distance_sensor_ != nullptr && now - last_nearest_distance_publish_millis_ >= 1000) {
+    last_nearest_distance_publish_millis_ = now;
+    nearest_distance_sensor_->publish_state(nearest);  // NAN -> unknown when no targets
+  }
 }
 
 void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payload) {
-  ESP_LOGV(TAG, "Temperature report: bytes=%u dtype=0x%02X", (unsigned) payload.size(),
-       payload.size() >= 3 ? (unsigned) payload[2] : 0xFF);
     if (payload.size() == 5 && payload[2] == 0x01) {
         uint16_t temp = payload[3] << 8 | payload[4];
         if (radar_temperature_sensor_ != nullptr) {
@@ -637,41 +2320,211 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
     }
 }
 
+void FP2Component::handle_debug_log_report_(const std::vector<uint8_t> &payload) {
+  if (payload.size() < 5 || payload[2] != 0x05) {
+    publish_radar_debug_("debug_log_malformed", AttrId::DEBUG_LOG, payload);
+    return;
+  }
+
+  uint16_t declared_len = (payload[3] << 8) | payload[4];
+  size_t available_len = payload.size() - 5;
+  size_t text_len = std::min(static_cast<size_t>(declared_len), available_len);
+  std::string text(payload.begin() + 5, payload.begin() + 5 + text_len);
+
+  while (!text.empty() && text.back() == '\0') {
+    text.pop_back();
+  }
+
+  ESP_LOGI(TAG, "Radar debug_log: %s", text.c_str());
+  if (radar_debug_sensor_ != nullptr) {
+    radar_debug_sensor_->publish_state("debug_log " + text);
+  }
+}
+
+void FP2Component::handle_simple_uint32_report_(const std::vector<uint8_t> &payload,
+                                                sensor::Sensor *sensor, const char *name) {
+  if (payload.size() != 7 || payload[2] != 0x02) {
+    publish_radar_debug_("uint32_report_malformed", (AttrId)((payload.size() >= 2) ? ((payload[0] << 8) | payload[1]) : 0), payload);
+    return;
+  }
+
+  uint32_t value = ((uint32_t) payload[3] << 24) |
+                   ((uint32_t) payload[4] << 16) |
+                   ((uint32_t) payload[5] << 8) |
+                   (uint32_t) payload[6];
+  ESP_LOGI(TAG, "%s report: %lu", name, value);
+  if (sensor != nullptr) {
+    sensor->publish_state(value);
+  }
+}
+
+void FP2Component::handle_simple_uint8_binary_report_(const std::vector<uint8_t> &payload,
+                                                      binary_sensor::BinarySensor *sensor,
+                                                      const char *name) {
+  if (payload.size() != 4 || (payload[2] != 0x00 && payload[2] != 0x04)) {
+    publish_radar_debug_("uint8_binary_report_malformed", (AttrId)((payload.size() >= 2) ? ((payload[0] << 8) | payload[1]) : 0), payload);
+    return;
+  }
+
+  bool state = payload[3] != 0;
+  ESP_LOGI(TAG, "%s report: %s", name, state ? "ON" : "OFF");
+  if (sensor != nullptr) {
+    sensor->publish_state(state);
+  }
+}
+
+void FP2Component::handle_sleep_data_report_(const std::vector<uint8_t> &payload) {
+  if (payload.size() < 5 || (payload[2] != 0x05 && payload[2] != 0x06)) {
+    publish_radar_debug_("sleep_data_malformed", AttrId::SLEEP_DATA, payload);
+    return;
+  }
+
+  uint16_t declared_len = (payload[3] << 8) | payload[4];
+  if (declared_len != 12 || payload.size() < 5 + declared_len) {
+    publish_radar_debug_("sleep_data_bad_len", AttrId::SLEEP_DATA, payload);
+    return;
+  }
+
+  publish_radar_debug_("radar_report", AttrId::SLEEP_DATA, payload);
+
+  // PROTOCOL 4.2.5: 12-byte item -> TargetID(0), ZoneID(1), Presence(2),
+  // followed by 9 bytes of vital-sign / sleep-stage data (format still unknown).
+  std::vector<uint8_t> blob(payload.begin() + 5, payload.begin() + 17);
+  uint8_t target_id = blob[0];
+  uint8_t zone_id = blob[1];
+  uint8_t presence = blob[2];
+  std::vector<uint8_t> vitals(blob.begin() + 3, blob.end());
+
+  std::string state = "target=" + std::to_string(target_id) +
+                      " zone=" + std::to_string(zone_id) +
+                      " presence=" + std::to_string(presence) +
+                      " vitals=" + format_payload_hex_(vitals, 9);
+
+  ESP_LOGI(TAG, "sleep_data report: %s", state.c_str());
+  if (sleep_data_sensor_ != nullptr) {
+    sleep_data_sensor_->publish_state(state);
+  }
+}
+
+void FP2Component::handle_sleep_state_report_(const std::vector<uint8_t> &payload) {
+  if (payload.size() != 4 || payload[2] != 0x00) {
+    publish_radar_debug_("sleep_state_malformed", AttrId::SLEEP_STATE, payload);
+    return;
+  }
+
+  uint8_t value = payload[3];
+  const char *label = "unknown";
+  switch (value) {
+    case 0: label = "inactive_or_out"; break;
+    case 1: label = "in_bed_or_active"; break;
+  }
+
+  std::string state = std::to_string(value) + ":" + label;
+  ESP_LOGI(TAG, "sleep_state report: %s", state.c_str());
+  if (sleep_state_sensor_ != nullptr) {
+    sleep_state_sensor_->publish_state(state);
+  }
+}
+
+void FP2Component::handle_sleep_event_report_(const std::vector<uint8_t> &payload) {
+  if (payload.size() != 4 || payload[2] != 0x00) {
+    publish_radar_debug_("sleep_event_malformed", AttrId::SLEEP_EVENT, payload);
+    return;
+  }
+
+  std::string state = std::to_string(payload[3]);
+  ESP_LOGI(TAG, "sleep_event report: %s", state.c_str());
+  if (sleep_event_sensor_ != nullptr) {
+    sleep_event_sensor_->publish_state(state);
+  }
+}
+
+void FP2Component::handle_target_posture_report_(const std::vector<uint8_t> &payload) {
+  if (payload.size() != 5 || payload[2] != 0x01) {
+    publish_radar_debug_("target_posture_malformed", AttrId::TARGET_POSTURE, payload);
+    return;
+  }
+
+  uint8_t target_or_zone = payload[3];
+  uint8_t posture = payload[4];
+  std::string state = "id=" + std::to_string(target_or_zone) + " posture=" + std::to_string(posture);
+  ESP_LOGI(TAG, "target_posture report: %s", state.c_str());
+  if (target_posture_sensor_ != nullptr) {
+    target_posture_sensor_->publish_state(state);
+  }
+}
+
+void FP2Component::handle_people_counting_report_(const std::vector<uint8_t> &payload) {
+  if (payload.size() < 5 || payload[2] != 0x06) {
+    publish_radar_debug_("people_counting_malformed", AttrId::PEOPLE_COUNTING, payload);
+    return;
+  }
+
+  uint16_t declared_len = (payload[3] << 8) | payload[4];
+  if (declared_len < 7 || payload.size() < 5 + declared_len) {
+    publish_radar_debug_("people_counting_bad_len", AttrId::PEOPLE_COUNTING, payload);
+    return;
+  }
+
+  uint8_t target_or_zone = payload[5];
+  uint32_t ontime = ((uint32_t) payload[6] << 24) |
+                    ((uint32_t) payload[7] << 16) |
+                    ((uint32_t) payload[8] << 8) |
+                    (uint32_t) payload[9];
+  uint16_t realtime = ((uint16_t) payload[10] << 8) | (uint16_t) payload[11];
+
+  std::string state = "id=" + std::to_string(target_or_zone) +
+                      " ontime=" + std::to_string(ontime) +
+                      " realtime=" + std::to_string(realtime);
+  ESP_LOGI(TAG, "people_counting report: %s", state.c_str());
+  if (people_counting_sensor_ != nullptr) {
+    people_counting_sensor_->publish_state(state);
+  }
+}
+
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  ESP_LOGV(TAG, "RX: RESPONSE attr=0x%04X bytes=%u", (uint16_t) attr_id, (unsigned) payload.size());
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
   } else {
-    // Normal Response with data (currently unused)
-    ESP_LOGD(TAG, "Received Response for 0x%04X with %d bytes", (uint16_t) attr_id, payload.size());
+    // PROTO-01: host reads are fire-and-forget (see enqueue_read_), so this
+    // is purely observational — there is no wait state to match/clear here.
+    publish_radar_debug_("radar_response", attr_id, payload);
+    ESP_LOGD(TAG, "Received Response for 0x%04X (%s) with %u bytes",
+             (uint16_t) attr_id, attr_id_to_string_(attr_id),
+             static_cast<unsigned>(payload.size()));
   }
 }
 
 void FP2Component::handle_reverse_read_request_(AttrId attr_id) {
   ESP_LOGI(TAG, "Received Reverse Query for SubID 0x%04X", (uint16_t) attr_id);
 
-  if (fp2_accel_ == nullptr) {
-    ESP_LOGW(TAG, "Reverse query requested but accel not set");
-    return;
-  }
-
   switch (attr_id) {
     case AttrId::DEVICE_DIRECTION:  // device_direction
-      send_reverse_response_(attr_id, (uint8_t)fp2_accel_->get_orientation());
-      ESP_LOGD(TAG, "Sending Device Direction: %d", fp2_accel_->get_orientation());
+      if (fp2_accel_ != nullptr) {
+        send_reverse_response_(attr_id, static_cast<uint8_t>(fp2_accel_->get_orientation()));
+        ESP_LOGD(TAG, "Sending Device Direction: %d", static_cast<int>(fp2_accel_->get_orientation()));
+      } else {
+        ESP_LOGW(TAG, "Reverse Query for Device Direction but no accel configured - ignoring");
+        publish_radar_debug_("reverse_query_no_accel", attr_id, std::vector<uint8_t>{});
+      }
       break;
 
     case AttrId::ANGLE_SENSOR_DATA:  // angle_sensor_data
-      {
-        uint8_t angle = fp2_accel_->get_output_angle_z();
+      if (fp2_accel_ != nullptr) {
+        uint16_t angle = fp2_accel_->get_output_angle_z();
         send_reverse_response_(attr_id, angle);
         ESP_LOGD(TAG, "Sending Angle Sensor Data: %d", angle);
+      } else {
+        ESP_LOGW(TAG, "Reverse Query for Angle Sensor Data but no accel configured - ignoring");
+        publish_radar_debug_("reverse_query_no_accel", attr_id, std::vector<uint8_t>{});
       }
       break;
 
     default:
-      ESP_LOGW(TAG, "Unknown Reverse Query SubID 0x%04X", (uint16_t) attr_id);
+      publish_radar_debug_("unknown_reverse_query", attr_id, std::vector<uint8_t>{});
+      ESP_LOGW(TAG, "Unknown Reverse Query SubID 0x%04X (%s)",
+               (uint16_t) attr_id, attr_id_to_string_(attr_id));
       break;
   }
 }
@@ -691,9 +2544,6 @@ void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
   cmd.data.push_back(byte_val);
 
   command_queue_.push_back(cmd);
-
-  ESP_LOGV(TAG, "Enqueued: op=0x%02X attr=0x%04X u8=%u (cmdq size=%u)", (unsigned) type, (uint16_t) attr_id,
-           (unsigned) byte_val, (unsigned) command_queue_.size());
 }
 
 void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
@@ -711,9 +2561,25 @@ void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
   cmd.data.push_back(word_val & 0xFF);
 
   command_queue_.push_back(cmd);
+}
 
-  ESP_LOGV(TAG, "Enqueued: op=0x%02X attr=0x%04X u16=%u (cmdq size=%u)", (unsigned) type, (uint16_t) attr_id,
-           (unsigned) word_val, (unsigned) command_queue_.size());
+void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
+                                    uint32_t dword_val) {
+  FP2Command cmd;
+  cmd.type = type;
+  cmd.attr_id = attr_id;
+  cmd.retry_count = 0;
+
+  // Payload: [SubID 2] [Type 1] [Data 4]
+  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
+  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
+  cmd.data.push_back(0x02); // UINT32
+  cmd.data.push_back((dword_val >> 24) & 0xFF);
+  cmd.data.push_back((dword_val >> 16) & 0xFF);
+  cmd.data.push_back((dword_val >> 8) & 0xFF);
+  cmd.data.push_back(dword_val & 0xFF);
+
+  command_queue_.push_back(cmd);
 }
 
 void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
@@ -730,9 +2596,6 @@ void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
   cmd.data.push_back((uint8_t) bool_val);
 
   command_queue_.push_back(cmd);
-
-  ESP_LOGV(TAG, "Enqueued: op=0x%02X attr=0x%04X bool=%u (cmdq size=%u)", (unsigned) type, (uint16_t) attr_id,
-           (unsigned) bool_val, (unsigned) command_queue_.size());
 }
 
 
@@ -755,13 +2618,13 @@ void FP2Component::enqueue_command_blob2_(
   cmd.data.insert(cmd.data.end(), blob_content.begin(), blob_content.end());
 
   command_queue_.push_back(cmd);
-
-  ESP_LOGV(TAG, "Enqueued: op=0x%02X attr=0x%04X blob2_len=%u (cmdq size=%u)", (unsigned) cmd.type,
-           (uint16_t) attr_id, (unsigned) blob_content.size(), (unsigned) command_queue_.size());
 }
 
 void FP2Component::enqueue_read_(AttrId attr_id) {
     FP2Command cmd;
+    // PROTO-01: host-initiated reads are OpCode::RESPONSE (wire 0x01), not
+    // OpCode::READ (wire 0x04, which is the radar's inbound response opcode).
+    // Fire-and-forget: send_next_command_() pops it immediately, no wait state.
     cmd.type = OpCode::RESPONSE;
     cmd.attr_id = attr_id;
     cmd.retry_count = 0;
@@ -848,6 +2711,17 @@ void FP2Component::dump_config() {
   ESP_LOGCONFIG(TAG, "Aqara FP2:");
   ESP_LOGCONFIG(TAG, "  Mounting Position: %d", mounting_position_);
   ESP_LOGCONFIG(TAG, "  Zones: %d", zones_.size());
+  ESP_LOGCONFIG(TAG, "  People Counting Report: %s", people_counting_report_enable_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  People Number Report: %s", people_number_enable_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Target Type Report: %s", target_type_enable_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Dwell Time Report: %s", dwell_time_enable_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Walking Distance Report: %s", walking_distance_enable_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Thermodynamic Chart Report: %s", thermodynamic_chart_enable_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Sleep Report: %s", has_sleep_report_enable_ ? (sleep_report_enable_ ? "YES" : "NO") : "not configured");
+  ESP_LOGCONFIG(TAG, "  Posture Report: %s", has_posture_report_enable_ ? (posture_report_enable_ ? "YES" : "NO") : "not configured");
+  ESP_LOGCONFIG(TAG, "  Fall Detection: %s", has_fall_detection_enabled_ ? (fall_detection_enabled_ ? "YES" : "NO") : "not configured");
+  ESP_LOGCONFIG(TAG, "  Debug Probe Reads: %s", debug_probe_reads_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Radar Debug Sensor: %s", radar_debug_sensor_ != nullptr ? "configured" : "not configured");
   if (reset_pin_ != nullptr) {
     LOG_PIN("  Reset Pin: ", reset_pin_);
   }
@@ -887,9 +2761,16 @@ const char* FP2Component::get_mounting_position_string_() {
 }
 
 void FP2Component::json_get_map_data(JsonObject root) {
+  auto status = root["save_status"].to<JsonObject>();
+  status["generation"] = save_generation_;
+  status["pending"] = save_pending();
+  status["ok"] = save_ok();
+  status["error"] = save_error();
+  root["global_sensitivity"] = global_presence_sensitivity_;
   // Global settings
   root["mounting_position"] = get_mounting_position_string_();
   root["left_right_reverse"] = left_right_reverse_;
+  root["wall_units_per_cell"] = wall_units_per_cell_;
 
   // Global grids (if configured)
   if (has_interference_grid_) {
@@ -903,17 +2784,73 @@ void FP2Component::json_get_map_data(JsonObject root) {
   }
 
   // Zones
-  if (!zones_.empty()) {
+  // CR-01 fix (12-REVIEW iter2): zones_ now retains removed zones as
+  // inactive entries (never erased - see remove_zone_at_runtime()), so
+  // "any zones to list" must check for an active entry, not just a
+  // non-empty vector, and the loop below must skip inactive entries.
+  bool has_active_zone = false;
+  for (FP2Zone *zone : zones_) {
+    if (zone->active) {
+      has_active_zone = true;
+      break;
+    }
+  }
+  if (has_active_zone) {
     JsonArray zones_array = root["zones"].to<JsonArray>();
     for (FP2Zone *zone : zones_) {
+      if (!zone->active)
+        continue;
       JsonObject zone_obj = zones_array.add<JsonObject>();
+      // WEBUI-01 (11-01): the device-hosted /zones list view needs a stable
+      // zone_id to submit on Save (D-02) - card.js never needed this because
+      // it only ever edited zones it had drawn itself.
+      zone_obj["id"] = zone->id;
       zone_obj["sensitivity"] = zone->sensitivity;
       zone_obj["grid"] = grid_to_hex_card_format(zone->grid);
+      if (zone->has_zone_type) {
+        // WEBUI-01 (11-01): pre-populate the list view's zone_type select
+        // (D-02). Conditional emit mirrors the presence_sensor style below -
+        // omitted entirely when the zone has no configured zone_type.
+        zone_obj["zone_type"] = zone->zone_type;
+      }
       if (zone->presence_sensor != nullptr) {
         zone_obj["presence_sensor"] = zone->presence_sensor->get_name().c_str();
       }
+      // RENAME-01 (13.1.1-01): emit the custom display name when set so the
+      // /zones page reflects a rename immediately, without waiting for the
+      // next reboot's rehydrate to update the HA entity's own name_ (no
+      // public runtime setter exists in this pinned build - see
+      // rename_zone_at_runtime()'s comment). Omitted entirely when unset,
+      // matching the presence_sensor conditional-emit style above.
+      if (zone->custom_name[0] != '\0') {
+        zone_obj["name"] = zone->custom_name;
+      }
     }
   }
+}
+
+// ZONEMGMT-01 (12-02): free-slot computation for the Add-Zone dropdown (D-01)
+// and the D-07 capacity-full UI state. Scans the LIVE zones_ union (compile-
+// time YAML zones + runtime-added zones) - never the NVS registry's
+// active_mask alone (Pitfall 3) - so a runtime add can never collide with a
+// compile-time zone's ID.
+void FP2Component::json_get_free_slots(JsonObject root) {
+  bool used[32] = {false};
+  for (const auto &zone : zones_) {
+    // CR-01 fix (12-REVIEW iter2): an inactive (removed) entry's ID must
+    // show up as free again - zones_ never erases a removed zone anymore.
+    if (zone->active && zone->id < 32) {
+      used[zone->id] = true;
+    }
+  }
+
+  JsonArray free_slots = root["free_slots"].to<JsonArray>();
+  for (uint8_t id = 0; id < 32; id++) {
+    if (!used[id]) {
+      free_slots.add(id);
+    }
+  }
+  root["full"] = (free_slots.size() == 0);
 }
 
 } // namespace aqara_fp2

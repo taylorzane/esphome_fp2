@@ -3,8 +3,9 @@ import json
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import pins
-from esphome.components import binary_sensor, sensor, switch, uart
+from esphome.components import binary_sensor, select, sensor, switch, uart, web_server, web_server_base
 from esphome.components import text_sensor as text_sensor_
+from esphome.components.web_server_base import CONF_WEB_SERVER_BASE_ID
 from esphome.const import (
     CONF_DEVICE_CLASS,
     CONF_DEVICE_ID,
@@ -15,9 +16,11 @@ from esphome.const import (
     CONF_NAME,
     CONF_SECOND,
     CONF_MOTION,
+    CONF_WEB_SERVER_ID,
     DEVICE_CLASS_TEMPERATURE,
     DEVICE_CLASS_OCCUPANCY,
     DEVICE_CLASS_MOTION,
+    DEVICE_CLASS_SAFETY,
     STATE_CLASS_MEASUREMENT,
     ENTITY_CATEGORY_DIAGNOSTIC,
     UNIT_CELSIUS,
@@ -30,12 +33,21 @@ from esphome.util import Registry
 from ..aqara_fp2_accel import AqaraFP2Accel
 
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["binary_sensor", "text_sensor", "sensor", "switch", "json"]
+# DIAG-02 (08-04): "socket" gives us ESPHome core's non-blocking socket::
+# wrapper (same one api_server.cpp uses) for the optional telnet raw-UART
+# bridge - no separate pip install, no FreeRTOS task.
+AUTO_LOAD = ["binary_sensor", "text_sensor", "sensor", "select", "switch", "json", "socket"]
 
 aqara_fp2_ns = cg.esphome_ns.namespace("aqara_fp2")
 FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice)
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
+FP2OperatingModeSelect = aqara_fp2_ns.class_("FP2OperatingModeSelect", select.Select)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
+
+# PROTO-04 (D-04): must match fp2_component.h's OPERATING_MODE_* constants
+# exactly (Zone/Fall/Sleep, in this order) so the select's options list and
+# the C++ control() mapping stay in sync.
+OPERATING_MODE_OPTIONS = ["Zone Detection", "Fall Detection", "Sleep Monitoring"]
 
 CONF_FP2_ID = "fp2_id"
 
@@ -47,22 +59,60 @@ CONF_EDGE_GRID = "edge_grid"
 CONF_ZONES = "zones"
 CONF_GRID = "grid"
 CONF_SENSITIVITY = "sensitivity"
+CONF_MOTION_TIMEOUT = "motion_timeout"
+CONF_ZONE_TYPE = "zone_type"
+CONF_TARGET_COUNT = "target_count"
+CONF_NEAREST_DISTANCE = "nearest_distance"
+# SENSE-01 (08-01): per-zone people count, decoded from ZONE_PEOPLE_NUMBER
+# (0x0175). Deliberately distinct from CONF_PEOPLE_COUNTING (0x0155) below,
+# which is an unrelated top-level text_sensor stream.
+CONF_PEOPLE_COUNT = "people_count"
 
 # New Options
 CONF_RADAR_RESET_PIN = "radar_reset_pin"
 CONF_PRESENCE_SENSITIVITY = "presence_sensitivity"
+CONF_FALL_DETECTION = "fall_detection"
 CONF_FALL_DETECTION_SENSITIVITY = "fall_detection_sensitivity"
+CONF_SLEEP_REPORT_ENABLE = "sleep_report_enable"
+CONF_POSTURE_REPORT_ENABLE = "posture_report_enable"
 CONF_PEOPLE_COUNTING_REPORT_ENABLE = "people_counting_report_enable"
 CONF_PEOPLE_NUMBER_ENABLE = "people_number_enable"
 CONF_TARGET_TYPE_ENABLE = "target_type_enable"
 CONF_DWELL_TIME_ENABLE = "dwell_time_enable"
 CONF_WALKING_DISTANCE_ENABLE = "walking_distance_enable"
+CONF_THERMODYNAMIC_CHART_ENABLE = "thermodynamic_chart_enable"
 CONF_TARGET_TRACKING = "target_tracking"
 CONF_LOCATION_REPORT_SWITCH = "location_report_switch"
+CONF_OPERATING_MODE = "operating_mode"
 CONF_RADAR_TEMPERATURE = "radar_temperature"
+CONF_REALTIME_PEOPLE_NUMBER = "realtime_people_number"
+CONF_ONTIME_PEOPLE_NUMBER = "ontime_people_number"
+CONF_REALTIME_PEOPLE_COUNTING = "realtime_people_counting"
+CONF_PEOPLE_COUNTING = "people_counting"
+CONF_WALKING_DISTANCE = "walking_distance"
+CONF_SLEEP_DATA = "sleep_data"
+CONF_SLEEP_PRESENCE = "sleep_presence"
+CONF_SLEEP_INOUT_STATE = "sleep_inout_state"
+CONF_FALL_DETECTED = "fall_detected"
+# SENSE-02 (08-02): FALL_OVERTIME_REPORT (0x0136) event report, distinct from
+# the 0x0134/0x0135 config attributes. May be an inert stub on stock
+# firmware per an independent fork's reverse-engineering - opt-in.
+CONF_FALL_OVERTIME = "fall_overtime"
+CONF_SLEEP_STATE = "sleep_state"
+CONF_SLEEP_EVENT = "sleep_event"
+CONF_TARGET_POSTURE = "target_posture"
 CONF_PRESENCE = "presence"
 CONF_GLOBAL_ZONE = "global_zone"
 CONF_RADAR_SOFTWARE_VERSION = "radar_software_version"
+CONF_RADAR_DEBUG = "radar_debug"
+CONF_DEBUG_PROBE_READS = "debug_probe_reads"
+CONF_DEBUG_MODE = "debug_mode"
+# DIAG-02 (08-04): optional single-client raw-UART telnet bridge. Default
+# DISABLED (D-05) - no port opened unless telnet_enable is explicitly set.
+# No authentication (D-06) - LAN-only/trusted-network use, documented loudly
+# in example_config.yaml and via a config-time ESP_LOGW.
+CONF_TELNET_ENABLE = "telnet_enable"
+CONF_TELNET_PORT = "telnet_port"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -74,6 +124,19 @@ SENSITIVITY_LEVELS = {
     "low": 1,
     "medium": 2,
     "high": 3,
+}
+
+# Zone furniture/scene type (0x0152). From reverse-engineering PROTOCOL.md.
+ZONE_TYPES = {
+    "none": 0,
+    "tv": 2,
+    "green_plant": 10,
+    "leisure": 11,
+    "dressing": 13,
+    "closet": 14,
+    "desk": 15,
+    "shower": 23,
+    "stairs": 36,
 }
 
 
@@ -164,10 +227,27 @@ ZONE_SCHEMA = (
         {
             cv.GenerateID(CONF_ID): cv.declare_id(FP2Zone),
             cv.Required(CONF_GRID): parse_ascii_grid,
+            cv.Optional(CONF_MOTION_TIMEOUT, default="5s"): cv.positive_time_period_milliseconds,
+            cv.Optional("zone_id"): cv.int_range(min=1, max=31),
+            cv.Optional(CONF_ZONE_TYPE): cv.enum(ZONE_TYPES),
             cv.Optional("zone_map_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
+            cv.Optional(CONF_PEOPLE_COUNT): sensor.sensor_schema(
+                icon="mdi:account-group",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
         }
     ).extend(ZONE_BASE_SCHEMA)
 )
+
+def validate_zone_ids(zones):
+    if len(zones) > 31:
+        raise cv.Invalid("at most 31 compiled zones are supported")
+    ids = [zone.get("zone_id", i + 1) for i, zone in enumerate(zones)]
+    if len(set(ids)) != len(ids):
+        raise cv.Invalid("zone_id values must be unique (including implicit list positions)")
+    return zones
+
 
 CONFIG_SCHEMA = (
     cv.Schema(
@@ -181,6 +261,22 @@ CONFIG_SCHEMA = (
             ),
 
             cv.Optional(CONF_LEFT_RIGHT_REVERSE, default=False): cv.boolean,
+            cv.Optional("radar_timeout", default="60s"): cv.positive_time_period_milliseconds,
+            cv.Optional("derive_presence", default=False): cv.boolean,
+            cv.Optional("absence_timeout", default="30s"): cv.positive_time_period_milliseconds,
+            cv.Optional("wall_units_per_cell", default=50): cv.float_range(min=1, max=1000),
+            cv.Optional("ignore_exit_targets", default=False): cv.boolean,
+            cv.Optional("require_active_target", default=False): cv.boolean,
+            cv.Optional(CONF_FALL_DETECTION): cv.boolean,
+            cv.Optional(CONF_FALL_DETECTION_SENSITIVITY): cv.enum(SENSITIVITY_LEVELS),
+            cv.Optional(CONF_SLEEP_REPORT_ENABLE): cv.boolean,
+            cv.Optional(CONF_POSTURE_REPORT_ENABLE): cv.boolean,
+            cv.Optional(CONF_PEOPLE_COUNTING_REPORT_ENABLE, default=True): cv.boolean,
+            cv.Optional(CONF_PEOPLE_NUMBER_ENABLE, default=True): cv.boolean,
+            cv.Optional(CONF_TARGET_TYPE_ENABLE, default=False): cv.boolean,
+            cv.Optional(CONF_DWELL_TIME_ENABLE, default=False): cv.boolean,
+            cv.Optional(CONF_WALKING_DISTANCE_ENABLE, default=False): cv.boolean,
+            cv.Optional(CONF_THERMODYNAMIC_CHART_ENABLE, default=True): cv.boolean,
             cv.Optional(CONF_INTERFERENCE_GRID): parse_ascii_grid,
             cv.Optional(CONF_EXIT_GRID): parse_ascii_grid,
             cv.Optional(CONF_EDGE_GRID): parse_ascii_grid,
@@ -189,6 +285,9 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_LOCATION_REPORT_SWITCH): switch.switch_schema(
                 FP2LocationSwitch
             ),
+            cv.Optional(CONF_OPERATING_MODE): select.select_schema(
+                FP2OperatingModeSelect
+            ),
 
             cv.Optional("edge_label_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
             cv.Optional("entry_exit_grid_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
@@ -196,17 +295,97 @@ CONFIG_SCHEMA = (
             cv.Optional("mounting_position_sensor"): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
 
             cv.Optional(CONF_GLOBAL_ZONE): ZONE_BASE_SCHEMA,
-            cv.Optional(CONF_ZONES): cv.ensure_list(ZONE_SCHEMA),
+            cv.Optional(CONF_ZONES): cv.All(cv.ensure_list(ZONE_SCHEMA), validate_zone_ids),
 
             cv.Optional(CONF_RADAR_SOFTWARE_VERSION): text_sensor_.text_sensor_schema(
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_RADAR_DEBUG): text_sensor_.text_sensor_schema(
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ).extend(
+                {
+                    cv.Optional(CONF_DISABLED_BY_DEFAULT, default=True): cv.boolean,
+                }
+            ),
+            cv.Optional(CONF_DEBUG_PROBE_READS, default=False): cv.boolean,
+            cv.Optional(CONF_DEBUG_MODE, default=False): cv.boolean,
+            cv.Optional(CONF_TELNET_ENABLE, default=False): cv.boolean,
+            cv.Optional(CONF_TELNET_PORT, default=23): cv.port,
+            # WEBUI-01/02 (11-04): opt-in references to the existing
+            # web_server so the device-hosted zone editor's routes can be
+            # registered in FP2Component::setup(); omit both to keep
+            # diagnostics-only web_server behavior.
+            cv.Optional(CONF_WEB_SERVER_ID): cv.use_id(web_server.WebServer),
+            cv.Optional(CONF_WEB_SERVER_BASE_ID): cv.use_id(web_server_base.WebServerBase),
             cv.Optional(CONF_RADAR_TEMPERATURE): sensor.sensor_schema(
                 unit_of_measurement=UNIT_CELSIUS,
                 icon=ICON_THERMOMETER,
                 accuracy_decimals=0,
                 device_class=DEVICE_CLASS_TEMPERATURE,
                 state_class=STATE_CLASS_MEASUREMENT,
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_REALTIME_PEOPLE_NUMBER): sensor.sensor_schema(
+                icon="mdi:counter",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_ONTIME_PEOPLE_NUMBER): sensor.sensor_schema(
+                icon="mdi:counter",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_REALTIME_PEOPLE_COUNTING): sensor.sensor_schema(
+                icon="mdi:counter",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_WALKING_DISTANCE): sensor.sensor_schema(
+                icon="mdi:walk",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_TARGET_COUNT): sensor.sensor_schema(
+                icon="mdi:account-group",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_NEAREST_DISTANCE): sensor.sensor_schema(
+                unit_of_measurement="m",
+                icon="mdi:ruler",
+                accuracy_decimals=2,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_SLEEP_PRESENCE): binary_sensor.binary_sensor_schema(
+                device_class=DEVICE_CLASS_OCCUPANCY,
+                icon="mdi:bed",
+            ),
+            cv.Optional(CONF_SLEEP_INOUT_STATE): binary_sensor.binary_sensor_schema(
+                icon="mdi:bed",
+            ),
+            cv.Optional(CONF_FALL_DETECTED): binary_sensor.binary_sensor_schema(
+                device_class=DEVICE_CLASS_SAFETY,
+                icon="mdi:human-cane",
+            ),
+            cv.Optional(CONF_FALL_OVERTIME): binary_sensor.binary_sensor_schema(
+                device_class=DEVICE_CLASS_SAFETY,
+                icon="mdi:clock-alert",
+            ),
+            cv.Optional(CONF_SLEEP_DATA): text_sensor_.text_sensor_schema(
+                icon="mdi:sleep",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_SLEEP_STATE): text_sensor_.text_sensor_schema(
+                icon="mdi:sleep",
+            ),
+            cv.Optional(CONF_SLEEP_EVENT): text_sensor_.text_sensor_schema(
+                icon="mdi:sleep",
+            ),
+            cv.Optional(CONF_TARGET_POSTURE): text_sensor_.text_sensor_schema(
+                icon="mdi:human",
+            ),
+            cv.Optional(CONF_PEOPLE_COUNTING): text_sensor_.text_sensor_schema(
+                icon="mdi:counter",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
         }
@@ -217,7 +396,23 @@ CONFIG_SCHEMA = (
 
 SENSOR_MAP = {
     CONF_RADAR_TEMPERATURE: (sensor.new_sensor, "set_radar_temperature_sensor"),
+    CONF_REALTIME_PEOPLE_NUMBER: (sensor.new_sensor, "set_realtime_people_number_sensor"),
+    CONF_ONTIME_PEOPLE_NUMBER: (sensor.new_sensor, "set_ontime_people_number_sensor"),
+    CONF_REALTIME_PEOPLE_COUNTING: (sensor.new_sensor, "set_realtime_people_counting_sensor"),
+    CONF_WALKING_DISTANCE: (sensor.new_sensor, "set_walking_distance_sensor"),
+    CONF_TARGET_COUNT: (sensor.new_sensor, "set_target_count_sensor"),
+    CONF_NEAREST_DISTANCE: (sensor.new_sensor, "set_nearest_distance_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
+    CONF_RADAR_DEBUG: (text_sensor_.new_text_sensor, "set_radar_debug_sensor"),
+    CONF_SLEEP_DATA: (text_sensor_.new_text_sensor, "set_sleep_data_sensor"),
+    CONF_SLEEP_STATE: (text_sensor_.new_text_sensor, "set_sleep_state_sensor"),
+    CONF_SLEEP_EVENT: (text_sensor_.new_text_sensor, "set_sleep_event_sensor"),
+    CONF_TARGET_POSTURE: (text_sensor_.new_text_sensor, "set_target_posture_sensor"),
+    CONF_PEOPLE_COUNTING: (text_sensor_.new_text_sensor, "set_people_counting_sensor"),
+    CONF_SLEEP_PRESENCE: (binary_sensor.new_binary_sensor, "set_sleep_presence_sensor"),
+    CONF_SLEEP_INOUT_STATE: (binary_sensor.new_binary_sensor, "set_sleep_inout_sensor"),
+    CONF_FALL_DETECTED: (binary_sensor.new_binary_sensor, "set_fall_detected_sensor"),
+    CONF_FALL_OVERTIME: (binary_sensor.new_binary_sensor, "set_fall_overtime_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
 
@@ -231,6 +426,7 @@ SENSOR_MAP = {
 ZONE_SENSOR_MAP = {
     CONF_PRESENCE: (binary_sensor.new_binary_sensor, "set_presence_sensor"),
     CONF_MOTION: (binary_sensor.new_binary_sensor, "set_motion_sensor"),
+    CONF_PEOPLE_COUNT: (sensor.new_sensor, "set_people_count_sensor"),
 
     # Text config sensors
     "zone_map_sensor": (text_sensor_.new_text_sensor, "set_map_sensor"),
@@ -242,11 +438,17 @@ async def to_code(config):
         for i, zone_conf in enumerate(config[CONF_ZONES]):
             var = cg.new_Pvariable(
                 zone_conf[CONF_ID],
-                i + 1,
+                zone_conf.get("zone_id", i + 1),
                 zone_conf[CONF_GRID],
                 zone_conf[CONF_PRESENCE_SENSITIVITY],
             )
+            cg.add(var.set_persistence_identity(str(zone_conf[CONF_ID])))
             await cg.register_component(var, zone_conf)
+
+            cg.add(var.set_motion_timeout(zone_conf[CONF_MOTION_TIMEOUT].total_milliseconds))
+
+            if CONF_ZONE_TYPE in zone_conf:
+                cg.add(var.set_zone_type(zone_conf[CONF_ZONE_TYPE]))
 
             # Create sensors if provided
             for key, (new, funcName) in ZONE_SENSOR_MAP.items():
@@ -266,6 +468,34 @@ async def to_code(config):
 
     cg.add(var.set_mounting_position(config[CONF_MOUNTING_POSITION]))
     cg.add(var.set_left_right_reverse(config[CONF_LEFT_RIGHT_REVERSE]))
+    cg.add(var.set_radar_timeout(config["radar_timeout"].total_milliseconds))
+    cg.add(var.set_derive_presence(config["derive_presence"]))
+    cg.add(var.set_absence_timeout(config["absence_timeout"].total_milliseconds))
+    cg.add(var.set_wall_units_per_cell(config["wall_units_per_cell"]))
+    cg.add(var.set_ignore_exit_targets(config["ignore_exit_targets"]))
+    cg.add(var.set_require_active_target(config["require_active_target"]))
+    cg.add(var.set_debug_probe_reads(config[CONF_DEBUG_PROBE_READS]))
+    cg.add(var.set_debug_mode(config[CONF_DEBUG_MODE]))
+    cg.add(var.set_telnet_enable(config[CONF_TELNET_ENABLE]))
+    cg.add(var.set_telnet_port(config[CONF_TELNET_PORT]))
+    cg.add(var.set_people_counting_report_enable(config[CONF_PEOPLE_COUNTING_REPORT_ENABLE]))
+    cg.add(var.set_people_number_enable(config[CONF_PEOPLE_NUMBER_ENABLE]))
+    cg.add(var.set_target_type_enable(config[CONF_TARGET_TYPE_ENABLE]))
+    cg.add(var.set_dwell_time_enable(config[CONF_DWELL_TIME_ENABLE]))
+    cg.add(var.set_walking_distance_enable(config[CONF_WALKING_DISTANCE_ENABLE]))
+    cg.add(var.set_thermodynamic_chart_enable(config[CONF_THERMODYNAMIC_CHART_ENABLE]))
+
+    if CONF_FALL_DETECTION in config:
+        cg.add(var.set_fall_detection(config[CONF_FALL_DETECTION]))
+
+    if CONF_FALL_DETECTION_SENSITIVITY in config:
+        cg.add(var.set_fall_detection_sensitivity(config[CONF_FALL_DETECTION_SENSITIVITY]))
+
+    if CONF_SLEEP_REPORT_ENABLE in config:
+        cg.add(var.set_sleep_report_enable(config[CONF_SLEEP_REPORT_ENABLE]))
+
+    if CONF_POSTURE_REPORT_ENABLE in config:
+        cg.add(var.set_posture_report_enable(config[CONF_POSTURE_REPORT_ENABLE]))
 
     if CONF_GLOBAL_ZONE in config:
         global_zone_conf = config[CONF_GLOBAL_ZONE]
@@ -293,6 +523,15 @@ async def to_code(config):
         if key in config:
             sens = await new(config[key])
             cg.add(getattr(var, funcName)(sens))
+
+    # PROTO-04 (D-04): registered inline (not via SENSOR_MAP) because
+    # select.new_select() requires the extra `options` kwarg the generic
+    # SENSOR_MAP loop above doesn't pass through.
+    if CONF_OPERATING_MODE in config:
+        sel = await select.new_select(
+            config[CONF_OPERATING_MODE], options=OPERATING_MODE_OPTIONS
+        )
+        cg.add(var.set_operating_mode_select(sel))
 
     # Generate map config JSON data at compile time
     map_config_data = {
@@ -329,3 +568,13 @@ async def to_code(config):
 
     accel = await cg.get_variable(config["accel"])
     cg.add(var.set_fp2_accel(accel))
+
+    # WEBUI-01/02 (11-04): hand the resolved WebServerBase*/WebServer* to
+    # FP2Component only when the config opts in - otherwise the members stay
+    # null and setup() registers nothing (see prohibitions in 11-04-PLAN.md).
+    if CONF_WEB_SERVER_BASE_ID in config:
+        wsb = await cg.get_variable(config[CONF_WEB_SERVER_BASE_ID])
+        cg.add(var.set_web_server_base(wsb))
+    if CONF_WEB_SERVER_ID in config:
+        ws = await cg.get_variable(config[CONF_WEB_SERVER_ID])
+        cg.add(var.set_web_server(ws))

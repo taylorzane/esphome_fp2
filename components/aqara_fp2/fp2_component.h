@@ -1,19 +1,39 @@
 #pragma once
 
 #include "esphome/components/binary_sensor/binary_sensor.h"
+#include "esphome/components/select/select.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/socket/socket.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/uart/uart.h"
+// Device-hosted Web UI is truly optional. ESPHome only copies component
+// headers into the generated source tree when that component is enabled in
+// YAML, so use __has_include rather than an unconditional dependency.
+#if __has_include("esphome/components/web_server/web_server.h")
+#define AQARA_FP2_HAS_DEVICE_WEBUI 1
+#include "esphome/components/web_server_idf/web_server_idf.h"
+#include "esphome/components/web_server_base/web_server_base.h"
+#include "esphome/components/web_server/web_server.h"
+#endif
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 
 #include "../aqara_fp2_accel/aqara_fp2_accel.h"
 
+#include "persistence.h"
+#include "protocol.h"
+#include "target_geometry.h"
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+#include "editor_mailbox.h"
+#endif
 #include <ArduinoJson.h>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace esphome {
@@ -23,6 +43,12 @@ static const char *const TAG = "aqara_fp2";
 
 // 40-byte Grid Map
 using GridMap = std::array<uint8_t, 40>;
+
+inline bool fp2_is_valid_zone_type_(int zone_type) {
+  return zone_type == -1 || zone_type == 0 || zone_type == 2 || zone_type == 10 ||
+         zone_type == 11 || zone_type == 13 || zone_type == 14 || zone_type == 15 ||
+         zone_type == 23 || zone_type == 36;
+}
 
 struct FP2Zone : public Component {
   FP2Zone(uint8_t zone_id, const GridMap grid, uint8_t sensitivity) : id(zone_id), grid(grid), sensitivity(sensitivity) {}
@@ -37,6 +63,10 @@ struct FP2Zone : public Component {
 
   void set_map_sensor(text_sensor::TextSensor *sensor) {
     this->map_sensor = sensor;
+  }
+
+  void set_people_count_sensor(sensor::Sensor *sensor) {
+    this->people_count_sensor = sensor;
   }
 
   void publish_presence(bool state) {
@@ -57,12 +87,60 @@ struct FP2Zone : public Component {
     }
   }
 
+  void publish_people_count(uint8_t count) {
+    if (this->people_count_sensor != nullptr) {
+      this->people_count_sensor->publish_state(count);
+    }
+  }
+
+  // Zone motion events (0x0115) are momentary. Hold the motion sensor ON and
+  // only release it after motion_timeout_ms with no new movement event (debounce).
+  void set_motion_timeout(uint32_t ms) { this->motion_timeout_ms = ms; }
+
+  void note_motion_event(uint32_t now) {
+    this->last_motion_millis = now;
+    if (!this->motion_active) {
+      this->motion_active = true;
+      this->publish_motion(true);
+    }
+  }
+
+  void tick_motion(uint32_t now) {
+    if (this->motion_active && (now - this->last_motion_millis) >= this->motion_timeout_ms) {
+      this->motion_active = false;
+      this->publish_motion(false);
+    }
+  }
+
+  void reset_motion() {
+    this->motion_active = false;
+    this->last_motion_millis = 0;
+    this->publish_motion(false);
+  }
+
+  // Zone furniture/scene type (0x0152). Helps the radar reject false
+  // positives from TVs, plants, etc. See ZONE_TYPES in __init__.py.
+  void set_zone_type(uint8_t t) {
+    this->zone_type = t;
+    this->has_zone_type = true;
+  }
+
+  void set_persistence_identity(const std::string &identity) { persistence_identity = identity; }
+  std::string persistence_identity;
   uint8_t id;
   esphome::binary_sensor::BinarySensor *presence_sensor{nullptr};
   esphome::binary_sensor::BinarySensor *motion_sensor{nullptr};
   esphome::text_sensor::TextSensor *map_sensor{nullptr};
+  esphome::sensor::Sensor *people_count_sensor{nullptr};
   GridMap grid;
   uint8_t sensitivity; // 1=Low, 2=Med, 3=High
+  char custom_name[32]{};
+  uint32_t motion_timeout_ms{5000};
+  uint32_t last_motion_millis{0};
+  bool motion_active{false};
+  uint8_t zone_type{0};
+  bool has_zone_type{false};
+  bool active{true};
 };
 
 class FP2Component;
@@ -97,41 +175,102 @@ enum class OpCode : uint8_t {
 };
 
 enum class AttrId : uint16_t {
+    RADAR_HW_VERSION                = 0x0101,
     RADAR_SW_VERSION                = 0x0102,
+    MOTION_DETECT                   = 0x0103,
+    PRESENCE_DETECT                 = 0x0104,
     WORK_MODE                       = 0x0116,
     MONITOR_MODE                    = 0x0105, // Detection direction (0=default, 1=L/R)
     LEFT_RIGHT_REVERSE              = 0x0122, // L/R swap (0/1/2)
     PRESENCE_DETECT_SENSITIVITY     = 0x0111, // Sensitivity (1-3)
     CLOSING_SETTING                 = 0x0106, // Proximity (0=far, 1=med, 2=close)
     ZONE_CLOSE_AWAY_ENABLE          = 0x0153, // Zone N close/away enable
+    // PROTO-03 (2026-07-14): 0x0121 is NOT a boolean "fall detection enable"
+    // register — it is the fall EVENT report: 0=clear, 1=type A, 2=type B.
+    // Ghidra-verified per JameZUK/esphome_fp2_ng; it only fires while the
+    // radar is in WORK_MODE=8 (Fall Detection scene). There is no separate
+    // enable register anywhere in the protocol — do not reintroduce a
+    // boolean write here. NOTE: this disagrees with the independent
+    // hansihe/AqaraPresenceSensorFP2ReverseEngineering PROTOCOL.md reference,
+    // which still lists 0x0121 as "fall_det, RW, Fall Detection Enable" —
+    // that reference predates the Ghidra-verified fork comparison and is
+    // wrong for this specific SubID (07-RESEARCH.md Pitfall 3). Do not
+    // "correct" this back using that reference.
+    FALL_DETECTION_RESULT           = 0x0121, // Fall event report: 0=clear/1=type A/2=type B
     FALL_SENSITIVITY                = 0x0123, // Fall sensitivity
+    RADAR_INTERFERENCE_AUTO_SETTING = 0x0125,
+    OTA_SET_FLAG                    = 0x0127,
+    FALL_OVERTIME_REPORT_PERIOD     = 0x0134,
+    FALL_OVERTIME_DETECTION         = 0x0135,
+    // SENSE-02 (08-02): fall-overtime EVENT report, distinct from 0x0134
+    // (REPORT_PERIOD, config) and 0x0135 (DETECTION, config enable) above.
+    // KNOWN RISK: an independent fork's reverse-engineering characterizes
+    // this SubID's stock-firmware handler as a 3-byte no-data stub and
+    // treats it as likely inert. Implemented structurally regardless
+    // (08-RESEARCH.md Pitfall 1 / Assumption A1) via the existing
+    // bounds-checked handle_simple_uint8_binary_report_ helper, which
+    // safely rejects a short/malformed payload without crashing.
+    FALL_OVERTIME_REPORT            = 0x0136,
+    INTERFERENCE_AUTO_ENABLE        = 0x0139,
+    EDGE_AUTO_SETTING               = 0x0149,
+    EDGE_AUTO_ENABLE                = 0x0150,
+    TARGET_POSTURE                  = 0x0154,
+    PEOPLE_COUNTING                 = 0x0155,
+    SLEEP_REPORT_ENABLE             = 0x0156,
+    POSTURE_REPORT_ENABLE           = 0x0157,
     PEOPLE_COUNT_REPORT_ENABLE      = 0x0158, // People counting enable
+    SLEEP_DATA                      = 0x0159,
+    DELETE_FALSE_TARGET             = 0x0160,
+    SLEEP_STATE                     = 0x0161,
     PEOPLE_NUMBER_ENABLE            = 0x0162, // People number enable
     TARGET_TYPE_ENABLE              = 0x0163, // AI person detection
+    REALTIME_PEOPLE_NUMBER          = 0x0164,
+    REALTIME_PEOPLE_COUNTING        = 0x0166,
+    SLEEP_PRESENCE                  = 0x0167,
     SLEEP_MOUNT_POSITION            = 0x0168, // Sleep mount position
     SLEEP_ZONE_SIZE                 = 0x0169, // Sleep zone dimensions
     WALL_CORNER_POS                 = 0x0170, // Wall/corner position
+    SLEEP_INOUT_STATE               = 0x0171,
     DWELL_TIME_ENABLE               = 0x0172, // Dwell tracking
     WALK_DISTANCE_ENABLE            = 0x0173, // Walking distance
+    WALK_DISTANCE_ALL               = 0x0174,
+    SLEEP_EVENT                     = 0x0176,
+    SLEEP_EVENT_DESCRIPTOR          = 0x0177,
+    SLEEP_BED_HEIGHT                = 0x0178,
+    // PROTO-03 (2026-07-14): the two entries below were mismapped — 0x0179
+    // was labeled OVERHEAD_HEIGHT (wrong) and 0x0180 was labeled
+    // FALL_DELAY_TIME (wrong value). Ghidra-verified per
+    // JameZUK/esphome_fp2_ng: 0x0179 is FALL_DELAY_TIME, 0x0180 is
+    // FALLDOWN_BLIND_ZONE (a 40-byte exclusion-zone grid, BLOB2).
+    FALL_DELAY_TIME                 = 0x0179, // Delay before confirming a fall (uint16)
+    FALLDOWN_BLIND_ZONE             = 0x0180, // Fall-detection exclusion zones (40B grid, BLOB2)
     INTERFERENCE_MAP                = 0x0110, // Interference map (40B)
     ENTRY_EXIT_MAP                  = 0x0109, // Enter/exit zones (40B)
     EDGE_MAP                        = 0x0107, // Detection boundary (40B)
     ZONE_MAP                        = 0x0114, // Zone N area map (1B ID + 40B)
     ZONE_SENSITIVITY                = 0x0151, // Zone N sensitivity
     ZONE_ACTIVATION_LIST            = 0x0202, // Auxiliary config (32B)
+    SLEEP_HEARTBEAT_SYNC            = 0x0203, // Incrementing u8 counter, WRITE on every heartbeat
+                                                // while in sleep/vitals work mode (WORK_MODE=9).
     DETECT_ZONE_TYPE                = 0x0152, // Zone N type
     DEVICE_DIRECTION                = 0x0143,
     ANGLE_SENSOR_DATA               = 0x0120,
     LOCATION_REPORT_ENABLE          = 0x0112,
+    RESET_ABSENT_STATUS             = 0x0113,
     ZONE_PRESENCE                   = 0x0142,
+    // SENSE-01 (08-01): per-zone people count report. Payload shape matches
+    // ZONE_PRESENCE: [SubID 2B] [Type 0x01(UINT16)] [ZoneID] [Count].
+    ZONE_PEOPLE_NUMBER              = 0x0175,
     LOCATION_TRACKING_DATA          = 0x0117,
     THERMO_EN                       = 0x0138,
     THERMO_DATA                     = 0x0141,
     TEMPERATURE                     = 0x0128,
     DETECT_ZONE_MOTION              = 0x0115,
-    MOTION_DETECT                   = 0x0103,
-    PRESENCE_DETECT                 = 0x0104,
     ONTIME_PEOPLE_NUMBER            = 0x0165,
+    DEBUG_LOG                       = 0x0201,
+    RADAR_FLASH_ID                  = 0x0302,
+    RADAR_ID                        = 0x0303,
+    RADAR_CALIBRATION_RESULT        = 0x0305,
     INVALID                         = 0xFFFF,
 };
 
@@ -141,6 +280,74 @@ struct FP2Command {
   std::vector<uint8_t> data;
   uint32_t last_send_time;
   uint8_t retry_count;
+  int16_t sequence{-1};
+  uint32_t save_generation{0};
+};
+
+// RUN-02/RUN-04 (09-03): NVS-persisted overrides for per-zone and Global
+// Zone save-to-sensor values (D-05 - one NVS entry per compiled zone plus
+// one distinct entry for the Global Zone). Packed so save()/load() write and
+// read a stable byte layout via ESPHome's standard
+// global_preferences->make_preference<T>(fnv1_hash(...)) mechanism (09-
+// RESEARCH.md Pattern 4) - no raw NVS/SPIFFS, no hand-rolled hashing. Bump
+// FP2_OVERRIDE_VERSION if this layout ever changes; a version mismatch at
+// load time is treated as "no override" (T-09-08).
+struct FP2ZoneOverride {
+  uint32_t version;
+  GridMap grid;
+  uint8_t sensitivity;  // 1..3
+  int16_t zone_type;    // -1 = not set, else a ZONE_TYPES value (0-255 range)
+} __attribute__((packed));
+
+struct FP2GlobalZoneOverride {
+  uint32_t version;
+  uint8_t presence_sensitivity;  // 1..3
+} __attribute__((packed));
+
+static const uint32_t FP2_OVERRIDE_VERSION = 1;
+
+// RENAME-01 (13.1.1-01): a runtime zone's custom display name, persisted to
+// a DISTINCT, separately-versioned NVS blob (key "fp2_zone_name_<id>") -
+// deliberately NOT a new field on FP2ZoneOverride. Adding a field to
+// FP2ZoneOverride would change its packed byte layout and force
+// FP2_OVERRIDE_VERSION to be bumped, which load_zone_override_() treats a
+// mismatch of as "no override" - silently resetting every already-persisted
+// zone override (grid/sensitivity/zone_type) on the real device to compiled
+// defaults on the very next flash (13.1.1-RESEARCH.md Pitfall 2). Keeping
+// the name in its own blob with its own FP2_ZONE_NAME_VERSION means adding
+// (or ever changing) the name schema can never invalidate an existing
+// FP2ZoneOverride. FP2_OVERRIDE_VERSION above MUST stay 1.
+struct FP2ZoneName {
+  uint32_t version;
+  char name[32];
+} __attribute__((packed));
+
+static const uint32_t FP2_ZONE_NAME_VERSION = 1;
+
+// ZONEMGMT-03 (12-01): fixed 32-slot NVS-backed registry MEMBERSHIP record -
+// which zone IDs (0-31) are currently runtime-registry-managed. Distinct
+// from FP2ZoneOverride (which stores a slot's *content*): this stores which
+// slots exist at all. Same packed-struct + versioned-key idiom as
+// FP2ZoneOverride/FP2GlobalZoneOverride above, but a DISTINCT version
+// constant (FP2_ZONE_REGISTRY_VERSION) - do not reuse FP2_OVERRIDE_VERSION,
+// this is a separate versioned blob (12-RESEARCH.md Pattern 2).
+struct FP2ZoneRegistryMeta {
+  uint32_t version;
+  uint32_t active_mask;  // bit N set = zone ID N is a runtime-registry-managed slot
+} __attribute__((packed));
+
+static const uint32_t FP2_ZONE_REGISTRY_VERSION = 1;
+
+// D-04: default content for a newly-created runtime zone - a full 14x14
+// active detection area. 14 repetitions of the byte pair 0x3F,0xFF (rows
+// 0-13, the 14x14 active area per parse_ascii_grid()'s offset_col=2
+// mapping) followed by 12 zero bytes (rows 14-19, outside the 14x14 active
+// area). Byte-verified against this project's own compiled test_zone
+// (12-RESEARCH.md Code Example 1).
+static const GridMap FULL_ACTIVE_GRID = {
+  0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF,
+  0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF, 0x3F, 0xFF,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 class FP2LocationSwitch : public switch_::Switch {
@@ -149,6 +356,23 @@ public:
 
 protected:
   void write_state(bool state) override;
+  FP2Component *parent_{nullptr};
+};
+
+// PROTO-04 (D-04): the three operating_mode option strings, defined once so
+// the C++ control() mapping and the __init__.py select options list stay
+// in sync. Match the reference fork's simpler 3-mode version (single Fall
+// Detection option, no LOCATION_REPORT_ENABLE split).
+static const char *const OPERATING_MODE_ZONE_DETECTION = "Zone Detection";
+static const char *const OPERATING_MODE_FALL_DETECTION = "Fall Detection";
+static const char *const OPERATING_MODE_SLEEP_MONITORING = "Sleep Monitoring";
+
+class FP2OperatingModeSelect : public select::Select {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void control(const std::string &value) override;
   FP2Component *parent_{nullptr};
 };
 
@@ -163,9 +387,30 @@ public:
   void set_mounting_position(uint8_t pos) { mounting_position_ = pos; }
   void set_left_right_reverse(bool val) { left_right_reverse_ = val; }
 
+  void set_fall_detection(bool val) {
+    fall_detection_enabled_ = val;
+    has_fall_detection_enabled_ = true;
+  }
+
   void set_fall_detection_sensitivity(uint8_t val) {
     fall_detection_sensitivity_ = val;
+    has_fall_detection_sensitivity_ = true;
   }
+
+  void set_sleep_report_enable(bool val) {
+    sleep_report_enable_ = val;
+    has_sleep_report_enable_ = true;
+  }
+  void set_posture_report_enable(bool val) {
+    posture_report_enable_ = val;
+    has_posture_report_enable_ = true;
+  }
+  void set_people_counting_report_enable(bool val) { people_counting_report_enable_ = val; }
+  void set_people_number_enable(bool val) { people_number_enable_ = val; }
+  void set_target_type_enable(bool val) { target_type_enable_ = val; }
+  void set_dwell_time_enable(bool val) { dwell_time_enable_ = val; }
+  void set_walking_distance_enable(bool val) { walking_distance_enable_ = val; }
+  void set_thermodynamic_chart_enable(bool val) { thermodynamic_chart_enable_ = val; }
 
   void set_interference_grid(const std::vector<uint8_t> &grid);
   void set_exit_grid(const std::vector<uint8_t> &grid);
@@ -185,6 +430,10 @@ public:
   void set_location_report_switch(FP2LocationSwitch *sw) {
     location_report_switch_ = sw;
     sw->set_parent(this);
+  }
+  void set_operating_mode_select(FP2OperatingModeSelect *sel) {
+    operating_mode_select_ = sel;
+    sel->set_parent(this);
   }
 
   void set_edge_label_grid_sensor(text_sensor::TextSensor *sensor) {
@@ -232,15 +481,98 @@ public:
   void set_radar_temperature_sensor(sensor::Sensor *sensor) {
       radar_temperature_sensor_ = sensor;
   }
+  void set_realtime_people_number_sensor(sensor::Sensor *sensor) {
+      realtime_people_number_sensor_ = sensor;
+  }
+  void set_ontime_people_number_sensor(sensor::Sensor *sensor) {
+      ontime_people_number_sensor_ = sensor;
+  }
+  void set_realtime_people_counting_sensor(sensor::Sensor *sensor) {
+      realtime_people_counting_sensor_ = sensor;
+  }
+  void set_walking_distance_sensor(sensor::Sensor *sensor) {
+      walking_distance_sensor_ = sensor;
+  }
+  void set_target_count_sensor(sensor::Sensor *sensor) { target_count_sensor_ = sensor; }
+  void set_nearest_distance_sensor(sensor::Sensor *sensor) { nearest_distance_sensor_ = sensor; }
   void set_radar_software_sensor(text_sensor::TextSensor *sensor) {
       radar_software_sensor_ = sensor;
   }
+  void set_radar_debug_sensor(text_sensor::TextSensor *sensor) {
+      radar_debug_sensor_ = sensor;
+  }
+  void set_sleep_state_sensor(text_sensor::TextSensor *sensor) {
+      sleep_state_sensor_ = sensor;
+  }
+  void set_sleep_data_sensor(text_sensor::TextSensor *sensor) {
+      sleep_data_sensor_ = sensor;
+  }
+  void set_sleep_event_sensor(text_sensor::TextSensor *sensor) {
+      sleep_event_sensor_ = sensor;
+  }
+  void set_target_posture_sensor(text_sensor::TextSensor *sensor) {
+      target_posture_sensor_ = sensor;
+  }
+  void set_people_counting_sensor(text_sensor::TextSensor *sensor) {
+      people_counting_sensor_ = sensor;
+  }
+  void set_sleep_presence_sensor(binary_sensor::BinarySensor *sensor) {
+      sleep_presence_sensor_ = sensor;
+  }
+  void set_sleep_inout_sensor(binary_sensor::BinarySensor *sensor) {
+      sleep_inout_sensor_ = sensor;
+  }
+  void set_fall_detected_sensor(binary_sensor::BinarySensor *sensor) {
+      fall_detected_sensor_ = sensor;
+  }
+  void set_fall_overtime_sensor(binary_sensor::BinarySensor *sensor) {
+      fall_overtime_sensor_ = sensor;
+  }
+  void set_debug_probe_reads(bool enabled) { debug_probe_reads_ = enabled; }
+  void set_debug_mode(bool enabled) { debug_mode_ = enabled; }
+  // DIAG-02 (08-04): telnet raw-UART bridge, default disabled (D-05/D-06).
+  void set_telnet_enable(bool enabled) { telnet_enable_ = enabled; }
+  void set_telnet_port(uint16_t port) { telnet_port_ = port; }
 
   void set_fp2_accel(aqara_fp2_accel::AqaraFP2Accel *accel) {
       fp2_accel_ = accel;
   }
 
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  // Optional device-hosted zone editor wiring.
+  void set_zone_editor_sse(esphome::web_server_idf::AsyncEventSource *sse) {
+      this->zone_editor_sse_.reset(sse);
+  }
+  void set_web_server_base(esphome::web_server_base::WebServerBase *base) {
+      this->web_server_base_ = base;
+  }
+  void set_web_server(esphome::web_server::WebServer *ws) {
+      this->web_server_ = ws;
+  }
+#endif
+
   void set_location_reporting_enabled(bool enabled);
+  void set_radar_timeout(uint32_t ms) { radar_timeout_ms_ = ms; }
+  void set_derive_presence(bool value) { derive_presence_ = value; }
+  void set_absence_timeout(uint32_t ms) { absence_timeout_ms_ = ms; }
+  void set_wall_units_per_cell(float value) { wall_units_per_cell_ = value; }
+  void set_ignore_exit_targets(bool value) { ignore_exit_targets_ = value; }
+  void set_require_active_target(bool value) { require_active_target_ = value; }
+  void force_detection_config();
+  void read_detection_config();
+  void read_mode_calibration_config();
+  void read_attr(uint16_t attr_id);
+  void write_attr_uint8(uint16_t attr_id, uint8_t value);
+  void write_attr_uint16(uint16_t attr_id, uint16_t value);
+  void write_attr_uint32(uint16_t attr_id, uint32_t value);
+  void write_attr_bool(uint16_t attr_id, bool value);
+  void configure_sleep_mode(uint16_t width, uint16_t length, uint8_t mount_position);
+  void set_work_mode(uint8_t mode);
+  void set_ai_target_filter_enabled(bool enabled);
+  void calibrate_empty_room();
+  void reset_radar();
+  void set_edge_auto_enabled(bool enabled);
+  void set_interference_auto_enabled(bool enabled);
 
   // Grid format conversion
   std::string grid_to_hex_card_format(const GridMap &grid);
@@ -250,11 +582,83 @@ public:
   JsonDocument get_map_config_json();
   void json_get_map_data(JsonObject root);
 
+  // RUN-04 (09-01/09-03): live single-register Global Zone save + ACK-
+  // feedback batch-completion accessors. On the valid path also persists to
+  // NVS (save_global_zone_override_(), 09-03) so the value survives a host
+  // reboot without a reflash.
+  void save_global_zone_to_sensor(uint8_t sensitivity);
+  // RUN-01 (09-02/09-03): live scoped-to-one-zone write (grid + sensitivity +
+  // zone_type) for an already-compiled zone, bundled as one write the radar
+  // ACKs (D-02). All parameters are validated server-side (V5) before any
+  // enqueue: zone_id must match an actual compiled entry in zones_ (not a
+  // bare 0-31 range check), sensitivity must be in {1,2,3}, zone_type must
+  // be -1 (unset) or a ZONE_TYPES value, and grid_hex must be exactly 80 hex
+  // characters. Reuses the same pending_save_attr_ids_ batch 09-01
+  // established - up to 4 registers this time (ZONE_MAP, ZONE_SENSITIVITY,
+  // DETECT_ZONE_TYPE if set, ZONE_CLOSE_AWAY_ENABLE). Does NOT resend
+  // ZONE_ACTIVATION_LIST (D-04). On the valid path also persists to NVS
+  // (save_zone_override_(), 09-03) so the value survives a host reboot
+  // without a reflash.
+  void save_zone_to_sensor(uint8_t zone_id, const std::string &grid_hex, uint8_t sensitivity,
+                            int zone_type);
+  // WEBUI-02 (11-03): device-hosted /zones editor entry point. Looks up the
+  // already-compiled zone's 40-byte grid server-side by zone_id and forwards
+  // it to save_zone_to_sensor() - the editor's HTTP handler never sends a
+  // grid over the wire (D-01), so there is nothing to trust or re-validate
+  // from the client beyond zone_id/sensitivity/zone_type, which
+  // save_zone_to_sensor() already fully validates (V5).
+  // WEBUI-04 (13-01): trailing optional grid_hex param - when the caller
+  // supplies a non-empty client-painted grid (already canonical 80-char
+  // hex), it is used directly instead of the server-side zones_ lookup
+  // below. Default lives only here (header declaration); every existing
+  // 3-arg call site is source-compatible and unchanged.
+  void save_zone_from_editor(uint8_t zone_id, uint8_t sensitivity, int zone_type,
+                              const std::string &grid_hex = "");
+  // ZONEMGMT-01/02 (12-01): public surface for the live zone registry -
+  // definitions land in Plan 02. Declared here now so the class surface is
+  // stable for this plan's rehydrate_zone_registry_() and Plan 02's HTTP
+  // handler wiring alike.
+  void add_zone_at_runtime(uint8_t zone_id, uint8_t sensitivity, int zone_type);
+  void remove_zone_at_runtime(uint8_t zone_id);
+  bool is_runtime_zone(uint8_t zone_id) const {
+    return zone_id < 32 && this->zone_slot_cache_[zone_id] != nullptr;
+  }
+  // RENAME-01 (13.1.1-01): pure NVS-metadata mutation for a runtime zone's
+  // custom display name - deliberately separate from
+  // save_zone_to_sensor()/save_zone_from_editor() (those write to the
+  // physical radar over UART; a rename never does). Runs on the main loop
+  // (deferred via App.scheduler.set_timeout by Plan 02's HTTP handler).
+  void rename_zone_at_runtime(uint8_t zone_id, const std::string &name);
+  void json_get_free_slots(JsonObject root);
+  // These accessors and live state are main-loop only. HTTP uses owned snapshots.
+  bool save_pending() const { return save_batch_in_progress_; }
+  bool save_ok() const { return save_completed(save_pending(), save_failed_); }
+  std::string save_error() const { return save_pending() ? "save still pending or timed out waiting" : save_error_; }
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  bool submit_editor_command(EditorCommand command) { return editor_mailbox_.submit(std::move(command)); }
+  EditorSnapshot editor_snapshot() { return editor_mailbox_.snapshot(); }
+#endif
+
 protected:
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  EditorMailbox editor_mailbox_;
+  void process_editor_command_();
+  void refresh_editor_snapshot_();
+  bool editor_last_pending_{false};
+#endif
+  bool persistence_failed_();
+  std::string zone_preference_key_(uint8_t zone_id) const;
   // Internal logic
   void process_command_queue_();
   void send_next_command_();
+  void write_command_frame_(FP2Command &cmd, bool track_timeout);
   void handle_incoming_byte_(uint8_t byte);
+  // DIAG-02 (08-04): best-effort, non-blocking mirror of raw TX/RX bytes to
+  // the connected telnet client, if any. Pure side effect - never consumes
+  // or delays bytes the frame parser needs. Defined in fp2_component.cpp
+  // once the accept/loop logic (Task 3) exists; declared here so Tasks 2/3
+  // can reference it as the socket scaffolding lands first.
+  void telnet_mirror_(const uint8_t *data, size_t len);
   const char* get_mounting_position_string_();
   void handle_parsed_frame_(uint8_t type, AttrId attr_id,
                             const std::vector<uint8_t> &payload);
@@ -262,24 +666,96 @@ protected:
   void handle_report_(AttrId attr_id, const std::vector<uint8_t> &payload);
   void handle_location_tracking_report_(const std::vector<uint8_t> &payload);
   void handle_temperature_report_(const std::vector<uint8_t> &payload);
+  void handle_debug_log_report_(const std::vector<uint8_t> &payload);
+  void handle_simple_uint32_report_(const std::vector<uint8_t> &payload,
+                                    sensor::Sensor *sensor, const char *name);
+  void handle_simple_uint8_binary_report_(const std::vector<uint8_t> &payload,
+                                          binary_sensor::BinarySensor *sensor,
+                                          const char *name);
+  void handle_sleep_data_report_(const std::vector<uint8_t> &payload);
+  void handle_sleep_state_report_(const std::vector<uint8_t> &payload);
+  void handle_sleep_event_report_(const std::vector<uint8_t> &payload);
+  void handle_target_posture_report_(const std::vector<uint8_t> &payload);
+  void handle_people_counting_report_(const std::vector<uint8_t> &payload);
   void handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload);
   void handle_reverse_read_request_(AttrId attr_id);
   void send_ack_(AttrId attr_id);
+  const char* attr_id_to_string_(AttrId attr_id);
+  const char* op_code_to_string_(uint8_t type);
+  std::string format_payload_hex_(const std::vector<uint8_t> &payload, size_t max_bytes);
+  void publish_radar_debug_(const char *event, AttrId attr_id,
+                            const std::vector<uint8_t> &payload);
 
   // Initialization
   void perform_reset_();
   void check_initialization_();
 
+  bool load_zone_override_(uint8_t zone_id, FP2ZoneOverride *out);
+  bool save_zone_override_(uint8_t zone_id, const GridMap &grid, uint8_t sensitivity,
+                            int zone_type);
+  bool load_global_zone_override_(FP2GlobalZoneOverride *out);
+  bool save_global_zone_override_(uint8_t presence_sensitivity);
+
+  // RENAME-01 (13.1.1-01): custom-name load/save - a DISTINCT, separately
+  // versioned NVS blob from FP2ZoneOverride above (see FP2ZoneName's
+  // comment). load_* returns false (treated as "no custom name - use the
+  // canonical default") on a missing entry OR a version mismatch, same
+  // graceful-absence contract as load_zone_override_().
+  bool load_zone_name_(uint8_t zone_id, char *out, size_t out_len);
+  bool save_zone_name_(uint8_t zone_id, const char *name);
+
+  // ZONEMGMT-03/04 (12-01): registry MEMBERSHIP load/save helpers (distinct
+  // from the per-zone-content overrides above) plus the boot-time
+  // rehydration entry point. load_* returns false (treated as "no runtime
+  // registry ever saved - compile-time zones_ stands as-is") on a missing
+  // entry OR a version mismatch, same idiom as load_zone_override_() above.
+  bool load_zone_registry_meta_(FP2ZoneRegistryMeta *out);
+  bool save_zone_registry_meta_(uint32_t active_mask);
+  void rehydrate_zone_registry_();
+
   aqara_fp2_accel::AqaraFP2Accel *fp2_accel_{nullptr};
 
   GPIOPin *reset_pin_{nullptr};
   bool init_done_{false};
+  uint32_t radar_timeout_ms_{60000};
+  uint32_t initialization_millis_{0};
+  uint32_t recovery_millis_{0};
+  uint8_t desired_work_mode_{3};
+  uint16_t sleep_width_{120}, sleep_length_{180};
+  uint8_t sleep_mount_{1};
+  bool radar_reboot_pending_{false};
+  bool derive_presence_{false};
+  bool ignore_exit_targets_{false};
+  bool require_active_target_{false};
+  float wall_units_per_cell_{50};
+  uint32_t absence_timeout_ms_{30000};
+  uint32_t derived_last_seen_{0};
+  bool derived_seen_{false};
+  std::array<uint32_t, 32> zone_derived_last_seen_{};
+  std::array<bool, 32> zone_derived_seen_{};
+  void check_radar_watchdog_();
+  uint8_t update_derived_states_(const std::vector<uint8_t> &blob, uint8_t count);
+  void expire_derived_states_();
+  uint32_t last_radar_frame_millis_{0};
   uint32_t last_heartbeat_millis_{0};
 
   // Configuration State
   uint8_t mounting_position_{0x01}; // Default Wall
   bool left_right_reverse_{false};
+  bool fall_detection_enabled_{false};
+  bool has_fall_detection_enabled_{false};
   uint8_t fall_detection_sensitivity_{1};
+  bool has_fall_detection_sensitivity_{false};
+  bool sleep_report_enable_{false};
+  bool has_sleep_report_enable_{false};
+  bool posture_report_enable_{false};
+  bool has_posture_report_enable_{false};
+  bool people_counting_report_enable_{true};
+  bool people_number_enable_{true};
+  bool target_type_enable_{false};
+  bool dwell_time_enable_{false};
+  bool walking_distance_enable_{false};
+  bool thermodynamic_chart_enable_{true};
 
   // Grids (Optional)
   GridMap interference_grid_{};
@@ -294,11 +770,21 @@ protected:
   binary_sensor::BinarySensor *global_presence_sensor_{nullptr};
   binary_sensor::BinarySensor *global_motion_sensor_{nullptr};
 
-  // Zones
   std::vector<FP2Zone*> zones_;
+  // Pitfall 4 (12-RESEARCH.md): ESPHome has no App.unregister_binary_sensor()
+  // - reuse an ever-constructed FP2Zone/BinarySensor object on re-add rather
+  // than leaking a fresh allocation every remove-then-re-add cycle within
+  // one uptime. Index is the zone ID (0-31); nullptr = never constructed
+  // this boot.
+  std::array<FP2Zone*, 32> zone_slot_cache_{};
   text_sensor::TextSensor *target_tracking_sensor_{nullptr};
   FP2LocationSwitch *location_report_switch_{nullptr};
-  bool location_reporting_active_{false};
+  FP2OperatingModeSelect *operating_mode_select_{nullptr};
+  bool location_reporting_active_{true};
+  uint32_t last_location_debug_millis_{0};
+  uint8_t last_location_target_count_{0xFF};
+  uint8_t last_published_target_count_{0xFF};
+  uint32_t last_nearest_distance_publish_millis_{0};
 
   // Grid text sensors
   text_sensor::TextSensor *edge_label_grid_sensor_{nullptr};
@@ -307,7 +793,41 @@ protected:
   text_sensor::TextSensor *mounting_position_sensor_{nullptr};
 
   sensor::Sensor *radar_temperature_sensor_{nullptr};
+  sensor::Sensor *realtime_people_number_sensor_{nullptr};
+  sensor::Sensor *ontime_people_number_sensor_{nullptr};
+  sensor::Sensor *realtime_people_counting_sensor_{nullptr};
+  sensor::Sensor *walking_distance_sensor_{nullptr};
+  sensor::Sensor *target_count_sensor_{nullptr};
+  sensor::Sensor *nearest_distance_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};
+  text_sensor::TextSensor *radar_debug_sensor_{nullptr};
+  text_sensor::TextSensor *sleep_data_sensor_{nullptr};
+  text_sensor::TextSensor *sleep_state_sensor_{nullptr};
+  text_sensor::TextSensor *sleep_event_sensor_{nullptr};
+  text_sensor::TextSensor *target_posture_sensor_{nullptr};
+  text_sensor::TextSensor *people_counting_sensor_{nullptr};
+  binary_sensor::BinarySensor *sleep_presence_sensor_{nullptr};
+  binary_sensor::BinarySensor *sleep_inout_sensor_{nullptr};
+  binary_sensor::BinarySensor *fall_detected_sensor_{nullptr};
+  binary_sensor::BinarySensor *fall_overtime_sensor_{nullptr};
+  bool debug_probe_reads_{false};
+  bool debug_mode_{false};
+
+  // DIAG-02 (08-04): optional single-client raw-UART telnet bridge (D-05/
+  // D-06). No socket is created unless telnet_enable_ is true - see setup().
+  bool telnet_enable_{false};
+  uint16_t telnet_port_{23};
+  std::unique_ptr<socket::Socket> telnet_listen_socket_;
+  std::unique_ptr<socket::Socket> telnet_client_;
+
+#ifdef AQARA_FP2_HAS_DEVICE_WEBUI
+  // Optional device-hosted /zones live view state.
+  std::unique_ptr<esphome::web_server_idf::AsyncEventSource> zone_editor_sse_;
+  bool sse_reporting_active_{false};
+  bool sse_forced_reporting_on_{false};
+  esphome::web_server_base::WebServerBase *web_server_base_{nullptr};
+  esphome::web_server::WebServer *web_server_{nullptr};
+#endif
 
   // Map Configuration (compile-time generated)
   std::string map_config_json_;
@@ -347,13 +867,36 @@ protected:
   static const uint32_t ACK_TIMEOUT_MS = 500;
   static const uint8_t MAX_RETRIES = 3;
 
+  // RUN-04 (09-01): save-batch completion tracking, fed additively by the
+  // existing ACK-success path (handle_ack_) and retry-exhausted path
+  // (process_command_queue_). Tracks the set of attr writes belonging to the
+  // current "save to sensor" batch that are still awaiting ACK - emptied on
+  // full success, cleared (with save_failed_ set) on the first timeout. Read
+  // via save_pending()/save_ok()/save_error() by the wait_until:+api.respond
+  // composition in the new HA action.
+  std::vector<AttrId> pending_save_attr_ids_;
+  uint32_t save_generation_{0};
+  bool save_failed_{false};
+  std::string save_error_;
+  bool save_batch_in_progress_{false};
+
+
+  // Sleep-mode heartbeat keepalive (PROTO-02). Internal-only, no config toggle:
+  // gated on sleep_mode_active_, set true by configure_sleep_mode(). Stock firmware
+  // expects an incrementing 0x0203 WRITE on every radar heartbeat while in sleep/
+  // vitals mode (WORK_MODE=9), or its sleep state machine gets stuck.
+  bool sleep_mode_active_{false};
+  uint8_t sleep_heartbeat_counter_{0};
+
   void enqueue_command_(OpCode type, AttrId attr_id, uint8_t byte_val);
   void enqueue_command_(OpCode type, AttrId attr_id, uint16_t word_val);
+  void enqueue_command_(OpCode type, AttrId attr_id, uint32_t dword_val);
   void enqueue_command_(OpCode type, AttrId attr_id, bool bool_val);
   void enqueue_command_blob2_(AttrId attr_id,
                               const std::vector<uint8_t> &blob_content);
   void enqueue_read_(AttrId attr_id);
   void send_reverse_response_(AttrId attr_id, uint8_t byte_val);
+  void send_reverse_response_(AttrId attr_id, uint16_t word_val);
 };
 
 } // namespace aqara_fp2
