@@ -1360,21 +1360,34 @@ class AqaraFP2Card extends HTMLElement {
         </div>
       </ha-card>
       <style>
-        ha-card {
+        aqara-fp2-card {
+          display: block;
+          min-width: 0;
+        }
+        aqara-fp2-card ha-card {
+          box-sizing: border-box;
+          width: 100%;
+          min-width: 0;
           padding: 16px;
         }
         .card-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
+          flex-wrap: wrap;
+          gap: 8px;
+          min-width: 0;
           margin-bottom: 16px;
         }
         .card-header .name {
+          min-width: 0;
+          overflow-wrap: anywhere;
           font-size: 24px;
           font-weight: 500;
         }
         .card-header .controls {
           display: flex;
+          flex-wrap: wrap;
           gap: 8px;
         }
         .card-header button {
@@ -1409,6 +1422,8 @@ class AqaraFP2Card extends HTMLElement {
           letter-spacing: 0.5px;
         }
         .card-content {
+          padding: 0;
+          min-width: 0;
           display: flex;
           flex-direction: column;
           gap: 16px;
@@ -1417,6 +1432,8 @@ class AqaraFP2Card extends HTMLElement {
           width: 100%;
           height: auto;
           max-width: 100%;
+          align-self: center;
+          flex: 0 0 auto;
           display: block;
           border: 1px solid var(--divider-color);
           border-radius: 4px;
@@ -1439,7 +1456,9 @@ class AqaraFP2Card extends HTMLElement {
         }
         .editor-controls button {
           flex: 0 0 auto;
-          white-space: nowrap;
+          max-width: 100%;
+          white-space: normal;
+          overflow-wrap: anywhere;
         }
         .editor-controls .layer-select {
           flex: 1 1 180px;
@@ -1748,6 +1767,9 @@ class AqaraFP2Card extends HTMLElement {
       this.updateCard();
     });
     this.resizeObserver.observe(this.content);
+    this._viewportResize = () => this.updateCard();
+    window.addEventListener("resize", this._viewportResize);
+    window.visualViewport?.addEventListener("resize", this._viewportResize);
 
     // Fetch map configuration from ESPHome service
     this.fetchMapConfig();
@@ -2324,8 +2346,11 @@ class AqaraFP2Card extends HTMLElement {
 
     const gridWidth = maxX - minX + 1;
     const gridHeight = maxY - minY + 1;
-    const cellSize = containerWidth / gridWidth;
-    const canvasWidth = containerWidth;
+    // Fit both dimensions with one scale. Capping height alone would stretch
+    // cells or leave the paint coordinates out of sync with the displayed grid.
+    const viewportHeight = window.visualViewport?.height || window.innerHeight || 800;
+    const cellSize = Math.min(containerWidth / gridWidth, viewportHeight * 0.65 / gridHeight);
+    const canvasWidth = cellSize * gridWidth;
     const canvasHeight = cellSize * gridHeight;
 
     // Set canvas size accounting for device pixel ratio
@@ -2777,11 +2802,12 @@ class AqaraFP2Card extends HTMLElement {
   // cell writes to the correct editorState index.
   canvasEventToGridCell(e) {
     const rect = this.canvas.getBoundingClientRect();
-    // Pointer client coordinates are already CSS-pixel viewport values,
-    // matching the CSS-pixel-space cellSize computed in renderCanvas — apply
-    // no per-pixel-ratio scaling factor here (RESEARCH Pattern 3).
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // Map the drawable content box to CSS drawing coordinates. The editor
+    // border is thicker than the live border; neither belongs to a grid cell.
+    const x = (e.clientX - rect.left - this.canvas.clientLeft) *
+      this.renderParams.canvasWidth / this.canvas.clientWidth;
+    const y = (e.clientY - rect.top - this.canvas.clientTop) *
+      this.renderParams.canvasHeight / this.canvas.clientHeight;
     const display = window.FP2Geometry.canvasPosToGridCell(x, y, this.renderParams);
     const canonicalX = window.FP2Geometry.invertColumnMirror(
       display.x,
@@ -2907,22 +2933,33 @@ class AqaraFP2Card extends HTMLElement {
     }
   }
 
+  connectedCallback() {
+    if (this.content && this._viewportResize) {
+      this.resizeObserver.observe(this.content);
+      window.addEventListener("resize", this._viewportResize);
+      window.visualViewport?.addEventListener("resize", this._viewportResize);
+      this.updateCard();
+    }
+  }
+
   disconnectedCallback() {
+    window.removeEventListener("resize", this._viewportResize);
+    window.visualViewport?.removeEventListener("resize", this._viewportResize);
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
     }
   }
 
   getCardSize() {
-    return 4;
+    // Masonry uses 50px units; Sections uses the content-height contract below.
+    return Math.ceil((this.offsetHeight || 400) / 50);
   }
 
   getGridOptions() {
     return {
-      rows: 4,
-      columns: 6,
-      min_rows: 3,
-      max_rows: 6,
+      rows: "auto",
+      columns: 12,
+      min_columns: 6,
     };
   }
 }

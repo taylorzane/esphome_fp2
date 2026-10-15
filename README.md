@@ -163,6 +163,18 @@ url: /local/community/aqara-fp2-card/card.js
 type: module
 ```
 
+### Sections layout
+
+The card uses automatic content height in Sections view, including while the
+existing zone editor and YAML export panel are open. New cards default to the
+full section width and can be resized down to six columns. If an existing card
+has a saved `grid_options.rows` override, remove it or set it to `auto` to allow
+the content to determine its height.
+
+The canvas fits the available width and at most 65% of the viewport height,
+keeping grid cells square. Controls wrap on narrow screens, and painting stays
+aligned after resizing.
+
 ### Card Features
 
 - **Real-time target tracking**: Shows detected people/objects with position and velocity vectors
@@ -297,3 +309,18 @@ See https://github.com/hansihe/AqaraPresenceSensorFP2ReverseEngineering for more
 ## Disclaimer
 
 This project is not affiliated with or endorsed by Aqara. Use at your own risk. The authors are not responsible for any damage to your hardware or any issues arising from the use of this software.
+
+### Sections browser regression
+
+`tests/sections-layout.browser.js` runs the local card in the public Home
+Assistant demo's real Sections renderer with an in-memory map fixture. See the
+commands at the top of that file. It does not persist a dashboard or call a
+device service.
+
+Validated at 1440×1000, 1440×500, 390×844, 320×568, and 844×390, with the editor
+open and closed. Checks cover following-card placement, horizontal overflow,
+square canvas scaling, the viewport height cap, and mouse painting/dragging
+through the last grid column. The existing `fp2-card-test.html` suite also
+passes all 93 assertions; `mise run test` passes the native, Python, and Bun
+regressions. Browser tests use Chromium and fixture data; the live dashboard
+and physical mobile touch interaction are not part of this check.
